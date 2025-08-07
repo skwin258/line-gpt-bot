@@ -1,7 +1,7 @@
-import express from 'express';
-import line from '@line/bot-sdk';
-import dotenv from 'dotenv';
-import OpenAI from 'openai';
+const express = require('express');
+const line = require('@line/bot-sdk');
+const dotenv = require('dotenv');
+const { Configuration, OpenAIApi } = require('openai');
 
 dotenv.config();
 
@@ -10,9 +10,10 @@ const config = {
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
-const openai = new OpenAI({
+const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY,
 });
+const openai = new OpenAIApi(configuration);
 
 const app = express();
 
@@ -27,20 +28,23 @@ app.post('/webhook', express.raw({ type: 'application/json' }), line.middleware(
 
         let replyText = `你說的是: ${userText}`;
 
+        // 百家樂分析示範
         if (userText.includes('百家分析') || userText.includes('百家樂分析')) {
           const prompt = `請幫我做一段專業的百家樂遊戲分析，給玩家下注建議，內容要詳盡且專業。`;
           try {
-            const completion = await openai.chat.completions.create({
+            const completion = await openai.createChatCompletion({
               model: "gpt-4o-mini",
               messages: [{ role: "user", content: prompt }],
               max_tokens: 500,
             });
-            replyText = completion.choices[0].message.content.trim();
+            replyText = completion.data.choices[0].message.content.trim();
           } catch (err) {
             console.error('OpenAI API error:', err);
             replyText = '抱歉，百家樂分析服務暫時不可用。';
           }
         }
+
+        // 你可以繼續擴展更多功能...
 
         await client.replyMessage(event.replyToken, {
           type: 'text',
