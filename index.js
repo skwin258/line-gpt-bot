@@ -11,7 +11,7 @@ const app = express();
 app.use(express.json());
 
 app.post('/webhook', line.middleware(config), async (req, res) => {
-  console.log('Webhook request body:', JSON.stringify(req.body, null, 2)); // 加入這行印出收到的資料
+  console.log('Webhook body:', JSON.stringify(req.body, null, 2));
   try {
     const events = req.body.events || [];
     const client = new line.Client(config);
@@ -27,7 +27,7 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 
     res.status(200).send('OK');
   } catch (error) {
-    console.error('Webhook handler error:', error);
+    console.error('Error in webhook handler:', error);
     res.status(500).end();
   }
 });
