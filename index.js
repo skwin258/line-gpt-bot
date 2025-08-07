@@ -1,37 +1,11 @@
 const express = require('express');
-const line = require('@line/bot-sdk');
-
-const config = {
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET,
-};
 
 const app = express();
 app.use(express.json());
 
-app.post('/webhook', line.middleware(config), async (req, res) => {
-  try {
-    const events = req.body.events;
-    const client = new line.Client(config);
-
-    await Promise.all(events.map(async (event) => {
-      if (event.type === 'message' && event.message.type === 'text') {
-        try {
-          await client.replyMessage(event.replyToken, {
-            type: 'text',
-            text: `你說的是: ${event.message.text}`,
-          });
-        } catch (err) {
-          console.error('Reply error:', err);
-        }
-      }
-    }));
-
-    res.status(200).send('OK');
-  } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).end();
-  }
+app.post('/webhook', (req, res) => {
+  console.log('Received webhook:', req.body);
+  res.status(200).send('OK');
 });
 
 const PORT = process.env.PORT || 3000;
