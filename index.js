@@ -7,34 +7,28 @@ const config = {
 };
 
 const app = express();
-
 app.use(express.json());
 
-app.get('/webhook', (req, res) => {
-  res.send('Webhook is live');
-});
-
-app.post('/webhook', line.middleware(config), (req, res) => {
-  Promise.all(req.body.events.map(handleEvent))
-    .then(result => res.json(result))
-    .catch((err) => {
-      console.error(err);
-      res.status(500).end();
-    });
-});
-
-async function handleEvent(event) {
-  if (event.type !== 'message' || event.message.type !== 'text') {
-    return Promise.resolve(null);
+app.post('/webhook', line.middleware(config), async (req, res) => {
+  try {
+    const results = await Promise.all(req.body.events.map(async (event) => {
+      if (event.type === 'message' && event.message.type === 'text') {
+        const client = new line.Client(config);
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: `你說的是: ${event.message.text}`,
+        });
+      }
+      return null;
+    }));
+    res.status(200).json(results);
+  } catch (err) {
+    console.error(err);
+    res.status(500).end();
   }
-  const client = new line.Client(config);
-  return client.replyMessage(event.replyToken, {
-    type: 'text',
-    text: `你說的是: ${event.message.text}`,
-  });
-}
+});
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+  console.log(`Listening on port ${PORT}`);
 });
