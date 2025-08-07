@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
 const axios = require('axios');
@@ -5,8 +6,7 @@ const axios = require('axios');
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(express.json()); // 🔧 這行很重要，必加！
-
+// LINE config
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
@@ -14,6 +14,7 @@ const config = {
 
 const client = new line.Client(config);
 
+// Webhook route
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events;
@@ -25,20 +26,21 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
   }
 });
 
+// 處理 LINE 使用者訊息
 async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') {
     return Promise.resolve(null);
   }
 
-  const prompt = event.message.text;
+  const userText = event.message.text;
   const replyToken = event.replyToken;
 
   try {
     const gptReply = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: "gpt-3.5-turbo",
-        messages: [{ role: "user", content: prompt }],
+        model: 'gpt-3.5-turbo',
+        messages: [{ role: 'user', content: userText }],
       },
       {
         headers: {
@@ -54,20 +56,20 @@ async function handleEvent(event) {
       type: 'text',
       text: replyText,
     });
-
-  } catch (err) {
-    console.error('GPT error:', err);
+  } catch (error) {
+    console.error('GPT Error:', error.message);
     return client.replyMessage(replyToken, {
       type: 'text',
-      text: '⚠️ 無法連接 GPT，請稍後再試。',
+      text: '⚠️ 抱歉，AI 回覆時發生錯誤，請稍後再試。',
     });
   }
 }
 
+// 健康檢查
 app.get('/', (req, res) => {
-  res.send('LINE GPT bot is running.');
+  res.send('🤖 LINE GPT bot is running.');
 });
 
 app.listen(port, () => {
-  console.log(`🚀 Server running on port ${port}`);
+  console.log(`Server running on port ${port}`);
 });
