@@ -11,13 +11,22 @@ const config = {
 
 const app = express();
 
-// 1. 先用 middleware 拿原始字串
-app.post('/webhook', line.middleware(config), express.json(), async (req, res) => {
-  try {
-    // 2. express.json() 會在這裡幫你轉成物件了
-    const events = req.body.events;
-    const client = new line.Client(config);
+// 注意！必須在這裡使用 express.raw() 解析原始 body，並限制路由為 /webhook
+app.post('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+  line.middleware(config)(req, res, (err) => {
+    if (err) {
+      console.error('Middleware error:', err);
+      return res.status(401).send('Unauthorized');
+    }
+    next();
+  });
+});
 
+app.post('/webhook', async (req, res) => {
+  const events = JSON.parse(req.body.toString()).events;
+  const client = new line.Client(config);
+
+  try {
     await Promise.all(events.map(async (event) => {
       if (event.type === 'message' && event.message.type === 'text') {
         await client.replyMessage(event.replyToken, {
