@@ -1,6 +1,8 @@
-require('dotenv').config();
 const express = require('express');
 const line = require('@line/bot-sdk');
+const dotenv = require('dotenv');
+
+dotenv.config();
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
@@ -8,12 +10,12 @@ const config = {
 };
 
 const app = express();
-app.use(express.json());
 
-app.post('/webhook', line.middleware(config), async (req, res) => {
-  console.log('Webhook body:', JSON.stringify(req.body, null, 2));
+// 1. 先用 middleware 拿原始字串
+app.post('/webhook', line.middleware(config), express.json(), async (req, res) => {
   try {
-    const events = req.body.events || [];
+    // 2. express.json() 會在這裡幫你轉成物件了
+    const events = req.body.events;
     const client = new line.Client(config);
 
     await Promise.all(events.map(async (event) => {
@@ -27,7 +29,7 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 
     res.status(200).send('OK');
   } catch (error) {
-    console.error('Error in webhook handler:', error);
+    console.error('Webhook handler error:', error);
     res.status(500).end();
   }
 });
