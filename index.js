@@ -11,34 +11,34 @@ const config = {
 
 const app = express();
 
-// 必須在這裡使用 express.raw 解析原始請求，且路由限定為 /webhook
-app.post('/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
-  line.middleware(config)(req, res, (err) => {
+// 只在 webhook 這個路由用 express.raw()，並用 LINE middleware 驗證簽章
+app.post('/webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  line.middleware(config)(req, res, async (err) => {
     if (err) {
       console.error('Middleware error:', err);
       return res.status(401).send('Unauthorized');
     }
-    next();
-  });
-});
 
-// 實際處理 webhook 事件
-app.post('/webhook', (req, res) => {
-  const events = JSON.parse(req.body.toString()).events;
-  const client = new line.Client(config);
+    // 解析事件
+    const events = JSON.parse(req.body.toString()).events;
+    const client = new line.Client(config);
 
-  Promise.all(events.map(async (event) => {
-    if (event.type === 'message' && event.message.type === 'text') {
-      await client.replyMessage(event.replyToken, {
-        type: 'text',
-        text: `你說的是: ${event.message.text}`,
-      });
+    try {
+      // 回覆所有訊息事件
+      await Promise.all(events.map(async (event) => {
+        if (event.type === 'message' && event.message.type === 'text') {
+          await client.replyMessage(event.replyToken, {
+            type: 'text',
+            text: `你說的是: ${event.message.text}`,
+          });
+        }
+      }));
+
+      res.status(200).send('OK');
+    } catch (error) {
+      console.error('Webhook handler error:', error);
+      res.status(500).end();
     }
-  })).then(() => {
-    res.status(200).send('OK');
-  }).catch((err) => {
-    console.error('Error in event handler:', err);
-    res.status(500).end();
   });
 });
 
