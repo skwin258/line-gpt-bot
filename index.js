@@ -1,5 +1,3 @@
-require('dotenv').config();
-
 const express = require('express');
 const line = require('@line/bot-sdk');
 
@@ -7,9 +5,6 @@ const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
-
-console.log('Channel Secret:', config.channelSecret);
-console.log('Channel Access Token:', config.channelAccessToken);
 
 const app = express();
 app.use(express.json());
@@ -30,7 +25,7 @@ app.post('/webhook', line.middleware(config), async (req, res) => {
 
     res.status(200).send('OK');
   } catch (error) {
-    console.error(error);
+    console.error('Reply message error:', error);
     res.status(500).end();
   }
 });
