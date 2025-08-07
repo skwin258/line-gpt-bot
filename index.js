@@ -11,24 +11,26 @@ app.use(express.json());
 
 app.post('/webhook', line.middleware(config), async (req, res) => {
   try {
-    const results = await Promise.all(req.body.events.map(async (event) => {
+    const events = req.body.events;
+    const client = new line.Client(config);
+
+    await Promise.all(events.map(async (event) => {
       if (event.type === 'message' && event.message.type === 'text') {
-        const client = new line.Client(config);
-        return client.replyMessage(event.replyToken, {
+        await client.replyMessage(event.replyToken, {
           type: 'text',
           text: `你說的是: ${event.message.text}`,
         });
       }
-      return null;
     }));
-    res.status(200).json(results);
-  } catch (err) {
-    console.error(err);
+
+    res.status(200).send('OK');
+  } catch (error) {
+    console.error(error);
     res.status(500).end();
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
