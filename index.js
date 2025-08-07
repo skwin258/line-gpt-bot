@@ -1,3 +1,15 @@
+require('dotenv').config();
+const express = require('express');
+const line = require('@line/bot-sdk');
+
+const config = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+};
+
+const app = express();
+
+// express.raw() + line.middleware 一起掛在 /webhook
 app.post('/webhook', express.raw({ type: 'application/json' }), line.middleware(config), async (req, res) => {
   try {
     const events = req.body.events;
@@ -17,4 +29,9 @@ app.post('/webhook', express.raw({ type: 'application/json' }), line.middleware(
     console.error('Error:', error);
     res.status(500).end();
   }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
