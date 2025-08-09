@@ -58,7 +58,7 @@ const INACTIVE_MS = 2 * 60 * 1000;
 const RESULT_COOLDOWN_MS = 10 * 1000;
 const QA_WINDOW_MS = 3 * 60 * 1000;
 
-// --------- 你的各種 Flex Message 生成函式與物件，請完整放這裡 ----------
+// --------- Flex Message 生成 ---------
 
 function generateHallSelectFlex(gameName) {
   const halls = Object.keys(tableData[gameName] || {});
@@ -255,7 +255,6 @@ function generateAnalysisResultFlex(fullTableName, predicted = null) {
   }
 
   const attachTieSmall = Math.random() < 0.05;
-
   const passRate = Math.floor(Math.random() * (90 - 45 + 1)) + 45;
 
   let betLevel = '觀望';
@@ -404,21 +403,21 @@ const flexMessageGameSelectJson = {
   },
 };
 
-// === 新增：圖文選單關鍵字回覆（聯絡客服 / 當月優惠） ===
-// TODO: 依實際修改
-const CONTACT_URL = 'https://example.com/contact'; // ← 你的聯絡客服網址
-const MONTHLY_PROMO_IMAGES = [
-  'https://i.imgur.com/1.jpg',
-  'https://i.imgur.com/2.jpg',
-  'https://i.imgur.com/3.jpg',
-  'https://i.imgur.com/4.jpg',
-  'https://i.imgur.com/5.jpg',
-]; // 最多5張（LINE 單次回覆上限5則訊息）
+// ===== 公開關鍵字（圖文選單用）：聯絡客服 / 當月優惠 =====
+const CONTACT_REPLY_TEXT = `💥加入會員立刻領取5000折抵金💥
+有任何疑問，客服隨時為您服務。
+https://lin.ee/6kcsWNF`;
 
-function buildContactMessage() {
-  return { type: 'text', text: CONTACT_URL };
-}
+const MONTHLY_PROMO_IMAGES = [
+  // 在這裡放最多 5 個 https 圖片連結（.jpg/.png），例如：
+  // 'https://your-cdn/promo/2025-08/1.jpg',
+  // 'https://your-cdn/promo/2025-08/2.jpg',
+];
+
 function buildMonthlyPromoMessages() {
+  if (!Array.isArray(MONTHLY_PROMO_IMAGES) || MONTHLY_PROMO_IMAGES.length === 0) {
+    return { type: 'text', text: '本月優惠圖片更新中，請稍後再試。' };
+  }
   return MONTHLY_PROMO_IMAGES.slice(0, 5).map((u) => ({
     type: 'image',
     originalContentUrl: u,
@@ -426,14 +425,9 @@ function buildMonthlyPromoMessages() {
   }));
 }
 
-// 可以擴充更多關鍵字
-function tryKeywordRoute(userMessage) {
-  if (/^聯絡客服$/i.test(userMessage)) {
-    return buildContactMessage();
-  }
-  if (/^當月優惠$/i.test(userMessage)) {
-    return buildMonthlyPromoMessages(); // 回傳陣列 -> 會一次送出多頁照片
-  }
+function tryPublicKeyword(msg) {
+  if (/^聯絡客服$/i.test(msg)) return { type: 'text', text: CONTACT_REPLY_TEXT };
+  if (/^當月優惠$/i.test(msg)) return buildMonthlyPromoMessages();
   return null;
 }
 
@@ -442,35 +436,10 @@ const app = express();
 app.use(middleware(config));
 app.use(express.json());
 
-// ====== 新增：覆寫 replyMessage -> 先回「看不見的空白」，再 push 原訊息 ======
-const replyTokenToUser = new Map();
-const _originalReplyMessage = client.replyMessage.bind(client);
-const INVISIBLE_BLANK = '\u2800'; // Braille Pattern Blank
-
-client.replyMessage = async (replyToken, messages) => {
-  try {
-    await _originalReplyMessage(replyToken, { type: 'text', text: INVISIBLE_BLANK });
-  } catch (err) {
-    console.error('Send blank reply failed:', err?.message || err);
-  }
-  try {
-    const userId = replyTokenToUser.get(replyToken);
-    if (userId) {
-      await client.pushMessage(userId, messages);
-    } else {
-      console.error('No userId mapped for replyToken; cannot push.');
-    }
-  } catch (err) {
-    console.error('Push original message failed:', err?.message || err);
-  }
-};
-// ====== 新增結束 ======
-
 // webhook 路由，快速回應 200
 app.post('/webhook', (req, res) => {
   res.status(200).end();
 
-  // 非同步處理事件
   handleEvents(req.body.events).catch((err) => {
     console.error('事件處理錯誤:', err);
   });
@@ -485,9 +454,6 @@ async function handleEvents(events) {
         const userId = event.source.userId;
         const userMessage = event.message.text.trim();
 
-        // 讓覆寫後的 replyMessage 能取得 userId 來 push
-        replyTokenToUser.set(event.replyToken, userId);
-
         const lastActive = userLastActiveTime.get(userId) || 0;
         if (now - lastActive > INACTIVE_MS) {
           userLastActiveTime.set(userId, now);
@@ -498,6 +464,13 @@ async function handleEvents(events) {
           return;
         }
         userLastActiveTime.set(userId, now);
+
+        // 先處理「公開關鍵字」
+        const pub = tryPublicKeyword(userMessage);
+        if (pub) {
+          await client.replyMessage(event.replyToken, pub);
+          return;
+        }
 
         if (userMessage === '會員開通' || userMessage === 'AI算牌說明') {
           await client.replyMessage(event.replyToken, {
@@ -515,14 +488,6 @@ async function handleEvents(events) {
           });
           return;
         }
-
-        // === 新增：圖文選單關鍵字（聯絡客服 / 當月優惠） ===
-        const kw = tryKeywordRoute(userMessage);
-        if (kw) {
-          await client.replyMessage(event.replyToken, kw);
-          return;
-        }
-        // === 新增結束 ===
 
         if (userMessage === '開始預測') {
           await client.replyMessage(event.replyToken, {
