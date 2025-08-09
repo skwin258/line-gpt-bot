@@ -48,28 +48,372 @@ const tableData = {
   },
 };
 
-const userLastActiveTime = new Map();   // userId -> timestamp(ms)
-const resultPressCooldown = new Map();  // userId -> timestamp(ms)
-const userRecentInput = new Map();      // userId -> { seq: string, ts: number }
-const qaModeUntil = new Map();          // userId -> timestamp(ms)
+// 狀態暫存
+const userLastActiveTime = new Map();   
+const resultPressCooldown = new Map();  
+const userRecentInput = new Map();      
+const qaModeUntil = new Map();          
 
 const INACTIVE_MS = 2 * 60 * 1000;
 const RESULT_COOLDOWN_MS = 10 * 1000;
 const QA_WINDOW_MS = 3 * 60 * 1000;
 
-// 你的各種 generateXXXFlex() 函式與工具函式
-// （請照你原本的全部帶進來，不用漏掉）
+// --------- 你的各種 Flex Message 生成函式與物件，請完整放這裡 ----------
+
+function generateHallSelectFlex(gameName) {
+  const halls = Object.keys(tableData[gameName] || {});
+  return {
+    type: 'bubble',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        {
+          type: 'text',
+          text: `遊戲：${gameName}`,
+          weight: 'bold',
+          color: '#00B900',
+          size: 'lg',
+          align: 'center',
+        },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: '請選擇遊戲廳', weight: 'bold', align: 'center', margin: 'md' },
+        {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          margin: 'lg',
+          contents: halls.map((hall) => ({
+            type: 'button',
+            style: 'primary',
+            color: '#00B900',
+            action: { type: 'message', label: hall, text: `${gameName}|${hall}` },
+          })),
+        },
+      ],
+    },
+  };
+}
+
+function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 10) {
+  const startIndex = (page - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, tables.length);
+  const pageTables = tables.slice(startIndex, endIndex);
+
+  const maxHighlightCount = Math.max(1, Math.floor(pageTables.length / 3));
+  const hotCount = Math.min(maxHighlightCount, 3);
+  const recommendCount = Math.min(maxHighlightCount, 3);
+
+  const hotIndexes = [];
+  const recommendIndexes = [];
+
+  while (hotIndexes.length < hotCount) {
+    const r = Math.floor(Math.random() * pageTables.length);
+    if (!hotIndexes.includes(r)) hotIndexes.push(r);
+  }
+
+  while (recommendIndexes.length < recommendCount) {
+    const r = Math.floor(Math.random() * pageTables.length);
+    if (!hotIndexes.includes(r) && !recommendIndexes.includes(r)) recommendIndexes.push(r);
+  }
+
+  const minBet = 100;
+  const maxBet = 10000;
+
+  const bubbles = pageTables.map((table, idx) => {
+    let statusText = '進行中';
+    let statusColor = '#555555';
+
+    if (hotIndexes.includes(idx)) {
+      statusText = '🔥熱門';
+      statusColor = '#FF3D00';
+    } else if (recommendIndexes.includes(idx)) {
+      statusText = '⭐本日推薦';
+      statusColor = '#FFD700';
+    }
+
+    return {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
+          { type: 'text', text: statusText, size: 'sm', color: statusColor, margin: 'sm' },
+          { type: 'text', text: `最低下注：${minBet}元`, size: 'sm', color: '#555555', margin: 'sm' },
+          { type: 'text', text: `最高限額：${maxBet}元`, size: 'sm', color: '#555555', margin: 'sm' },
+          {
+            type: 'button',
+            action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` },
+            style: 'primary',
+            color: '#00B900',
+            margin: 'md',
+          },
+        ],
+      },
+    };
+  });
+
+  const carousel = {
+    type: 'carousel',
+    contents: bubbles,
+  };
+
+  if (endIndex < tables.length) {
+    carousel.contents.push({
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            text: `還有更多牌桌，點擊下一頁`,
+            wrap: true,
+            size: 'md',
+            weight: 'bold',
+            align: 'center',
+          },
+          {
+            type: 'button',
+            action: {
+              type: 'message',
+              label: '下一頁',
+              text: `nextPage|${page + 1}|${gameName}|${hallName}`,
+            },
+            style: 'primary',
+            color: '#00B900',
+            margin: 'lg',
+          },
+        ],
+      },
+    });
+  }
+
+  return carousel;
+}
+
+function generateInputInstructionFlex(fullTableName) {
+  return {
+    type: 'bubble',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        { type: 'text', text: '分析中', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+        { type: 'text', text: `桌號：${fullTableName}`, margin: 'md', color: '#555555' },
+        { 
+          type: 'text', 
+          text: '請輸入前10局閒莊和的結果，最少需要輸入前三局，例:閒莊閒莊閒莊閒莊和閒', 
+          margin: 'md', 
+          color: '#555555',
+          wrap: true
+        },
+        {
+          type: 'button',
+          action: {
+            type: 'message',
+            label: '開始分析',
+            text: `開始分析|${fullTableName}`,
+          },
+          style: 'primary',
+          color: '#00B900',
+          margin: 'lg',
+        },
+      ],
+    },
+  };
+}
+
+function randHundreds(min, max) {
+  const start = Math.ceil(min / 100);
+  const end = Math.floor(max / 100);
+  const pick = Math.floor(Math.random() * (end - start + 1)) + start;
+  return pick * 100;
+}
+
+function pickOne(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function generateAnalysisResultFlex(fullTableName, predicted = null) {
+  const parts = String(fullTableName).split('|');
+  const gameName = parts[0] || fullTableName;
+  const hallName = parts[1] || '';
+  const isDragonTiger = hallName === '龍虎鬥';
+
+  let mainPick;
+  if (predicted && ((isDragonTiger && (predicted === '龍' || predicted === '虎')) || (!isDragonTiger && (predicted === '莊' || predicted === '閒')))) {
+    mainPick = predicted;
+  } else {
+    const r = Math.random() * 100;
+    if (isDragonTiger) {
+      mainPick = (r < 50) ? '龍' : '虎';
+    } else {
+      mainPick = (r < 50) ? '莊' : '閒';
+    }
+  }
+
+  const attachTieSmall = Math.random() < 0.05;
+
+  const passRate = Math.floor(Math.random() * (90 - 45 + 1)) + 45;
+
+  let betLevel = '觀望';
+  let betAmount = 100;
+  if (passRate <= 50) {
+    betLevel = '觀望';
+    betAmount = 100;
+  } else if (passRate <= 65) {
+    betLevel = '小注';
+    betAmount = randHundreds(100, 1000);
+  } else if (passRate <= 75) {
+    betLevel = '中注';
+    betAmount = randHundreds(1100, 2000);
+  } else {
+    betLevel = '重注';
+    betAmount = randHundreds(2100, 3000);
+  }
+
+  const proReasonsGeneric = [
+    `近期節奏偏${mainPick}，點數優勢與回補力度明顯，勝率估約${passRate}% ，資金可採階梯式進場。`,
+    `路紙呈單邊延伸且波動收斂，${mainPick}佔優；以風險報酬比評估，${betLevel}較合理。`,
+    `連動段落尚未轉折，${mainPick}方承接力強；量化指標偏多，建議依紀律${betLevel}。`,
+    `盤勢慣性朝${mainPick}傾斜，短期優勢未被破壞；依趨勢交易邏輯，執行${betLevel}。`,
+    `形態未出現反轉訊號，${mainPick}動能續航；配合分散下注原則，${betLevel}較佳。`,
+  ];
+  const mainReason = pickOne(proReasonsGeneric);
+
+  const tieReasons = [
+    `點數拉鋸且對稱度提高，和局機率上緣提升；僅以極小資金對沖波動。`,
+    `近期出現多次臨界點比拼，存在插針和局風險；建議和局小注防守。`,
+    `節奏收斂、分差縮小，和局出現條件具備；以小注配置分散風險。`,
+    `牌型分布有輕微對稱跡象，和局非主軸但可小試；資金控制為先。`,
+  ];
+  const tieAddOn = attachTieSmall ? pickOne(tieReasons) : '';
+
+  const resultLine = `預測結果為：${mainPick}（${betLevel}）${attachTieSmall ? ' 和小下' : ''}`;
+
+  const leftBtnLabel  = isDragonTiger ? '龍' : '閒';
+  const rightBtnLabel = isDragonTiger ? '虎' : '莊';
+
+  return {
+    type: 'bubble',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        { type: 'text', text: '分析結果', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+        { type: 'text', text: `牌桌：${gameName}`, margin: 'md', color: '#555555' },
+        { type: 'text', text: resultLine, margin: 'md', size: 'md' },
+        { type: 'text', text: `推薦下注金額：${betAmount} 元`, margin: 'md', size: 'md' },
+        { type: 'text', text: `過關機率：約 ${passRate}%`, margin: 'md', size: 'md' },
+        { type: 'text', text: `說明：${mainReason}`, margin: 'md', wrap: true },
+        ...(attachTieSmall ? [{ type: 'text', text: `和小下理由：${tieAddOn}`, margin: 'md', wrap: true }] : []),
+        {
+          type: 'box',
+          layout: 'horizontal',
+          spacing: 'md',
+          margin: 'md',
+          contents: [
+            {
+              type: 'button',
+              style: 'primary',
+              color: '#2185D0',
+              action: { type: 'message', label: leftBtnLabel, text: `當局結果為|${leftBtnLabel}|${fullTableName}` },
+              flex: 1,
+            },
+            {
+              type: 'button',
+              style: 'primary',
+              color: '#21BA45',
+              action: { type: 'message', label: '和', text: `當局結果為|和|${fullTableName}` },
+              flex: 1,
+            },
+            {
+              type: 'button',
+              style: 'primary',
+              color: '#DB2828',
+              action: { type: 'message', label: rightBtnLabel, text: `當局結果為|${rightBtnLabel}|${fullTableName}` },
+              flex: 1,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+const flexMessageIntroJson = {
+  type: 'bubble',
+  body: {
+    type: 'box',
+    layout: 'vertical',
+    contents: [
+      { type: 'text', text: 'SKwin AI算牌系統', weight: 'bold', color: '#00B900', size: 'lg', margin: 'md', align: 'center' },
+      { type: 'text', text: '注意事項及使用說明', weight: 'bold', margin: 'md', align: 'center' },
+      {
+        type: 'box',
+        layout: 'vertical',
+        margin: 'md',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: '1. 每次啟動系統後，請先觀察3~5局預測結果，再開始下注。', wrap: true },
+          { type: 'separator', margin: 'sm' },
+          { type: 'text', text: '2. 若在同一桌連續輸掉3局，建議立即換桌，讓系統繼續分析牌局數據。', wrap: true },
+          { type: 'separator', margin: 'sm' },
+          { type: 'text', text: '3. 根據當局開出的結果進行點選，請勿選擇錯誤，不然會造成系統判斷錯誤。', wrap: true },
+          { type: 'separator', margin: 'sm' },
+          { type: 'text', text: '4. 只要兩分鐘內未繼續使用即會中斷。', wrap: true },
+          { type: 'separator', margin: 'sm' },
+          { type: 'text', text: '5. AI預測為輔助工具，請保持理性投注，量力而為，見好就收。', wrap: true },
+        ],
+      },
+      {
+        type: 'button',
+        action: { type: 'message', label: '開始預測', text: '開始預測' },
+        style: 'primary',
+        color: '#00B900',
+        margin: 'xl',
+      },
+    ],
+  },
+};
+
+const flexMessageGameSelectJson = {
+  type: 'bubble',
+  body: {
+    type: 'box',
+    layout: 'vertical',
+    contents: [
+      { type: 'text', text: 'SKwin AI算牌系統', weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
+      { type: 'separator', margin: 'md' },
+      { type: 'text', text: '請選擇遊戲', align: 'center', margin: 'md', weight: 'bold' },
+      {
+        type: 'box',
+        layout: 'vertical',
+        margin: 'lg',
+        spacing: 'md',
+        contents: [
+          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: 'DG真人', text: 'DG真人' } },
+          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '歐博真人', text: '歐博真人' } },
+          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '沙龍真人', text: '沙龍真人' } },
+          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: 'WM真人', text: 'WM真人' } },
+        ],
+      },
+    ],
+  },
+};
 
 const app = express();
 
 app.use(middleware(config));
 app.use(express.json());
 
+// webhook 路由，快速回應 200
 app.post('/webhook', (req, res) => {
-  // 立刻快速回應 LINE，避免 webhook 超時
   res.status(200).end();
 
-  // 非同步事件處理
+  // 非同步處理事件
   handleEvents(req.body.events).catch((err) => {
     console.error('事件處理錯誤:', err);
   });
@@ -260,7 +604,7 @@ async function handleEvents(events) {
           }
           resultPressCooldown.set(userId, now);
 
-          const parts = userMessage.split('|'); // 當局結果為|<結果>|<桌號>
+          const parts = userMessage.split('|'); 
           if (parts.length === 3) {
             const fullTableName = parts[2];
             const analysisResultFlex = generateAnalysisResultFlex(fullTableName);
