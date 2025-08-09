@@ -58,30 +58,6 @@ const INACTIVE_MS = 2 * 60 * 1000;
 const RESULT_COOLDOWN_MS = 10 * 1000;
 const QA_WINDOW_MS = 3 * 60 * 1000;
 
-// ====== 新增：先回空白，再 push 原訊息（全域套用） ======
-const replyTokenToUser = new Map();
-const _originalReplyMessage = client.replyMessage.bind(client);
-client.replyMessage = async (replyToken, messages) => {
-  // 先用 reply 回一則空白，壓掉官方自動訊息
-  try {
-    await _originalReplyMessage(replyToken, { type: 'text', text: ' ' });
-  } catch (err) {
-    console.error('Send blank reply failed:', err?.message || err);
-  }
-  // 再用 push 把原本要回的內容補送出去
-  try {
-    const userId = replyTokenToUser.get(replyToken);
-    if (userId) {
-      await client.pushMessage(userId, messages);
-    } else {
-      console.error('No userId mapped for replyToken, cannot push original messages.');
-    }
-  } catch (err) {
-    console.error('Push original message failed:', err?.message || err);
-  }
-};
-// ====== 新增結束 ======
-
 // --------- 你的各種 Flex Message 生成函式與物件，請完整放這裡 ----------
 
 function generateHallSelectFlex(gameName) {
@@ -433,6 +409,33 @@ const app = express();
 app.use(middleware(config));
 app.use(express.json());
 
+// ====== 新增：覆寫 replyMessage -> 先回「看不見的空白」，再 push 原訊息 ======
+const replyTokenToUser = new Map();
+const _originalReplyMessage = client.replyMessage.bind(client);
+const INVISIBLE_BLANK = '\u2800'; // Braille Pattern Blank
+
+client.replyMessage = async (replyToken, messages) => {
+  try {
+    // 1) 先回一則看似空白的文字，避免觸發官方自動訊息
+    await _originalReplyMessage(replyToken, { type: 'text', text: INVISIBLE_BLANK });
+  } catch (err) {
+    console.error('Send blank reply failed:', err?.message || err);
+  }
+
+  try {
+    // 2) 再 push 原本要回的內容
+    const userId = replyTokenToUser.get(replyToken);
+    if (userId) {
+      await client.pushMessage(userId, messages);
+    } else {
+      console.error('No userId mapped for replyToken; cannot push.');
+    }
+  } catch (err) {
+    console.error('Push original message failed:', err?.message || err);
+  }
+};
+// ====== 新增結束 ======
+
 // webhook 路由，快速回應 200
 app.post('/webhook', (req, res) => {
   res.status(200).end();
@@ -452,7 +455,7 @@ async function handleEvents(events) {
         const userId = event.source.userId;
         const userMessage = event.message.text.trim();
 
-        // 新增：將 replyToken 對應到 userId，供覆寫後的 replyMessage 使用 push
+        // 讓覆寫後的 replyMessage 能取得 userId 來 push
         replyTokenToUser.set(event.replyToken, userId);
 
         const lastActive = userLastActiveTime.get(userId) || 0;
