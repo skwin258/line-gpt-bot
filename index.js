@@ -409,8 +409,8 @@ const CONTACT_REPLY_TEXT = `💥加入會員立刻領取5000折抵金💥
 https://lin.ee/6kcsWNF`;
 
 const MONTHLY_PROMO_IMAGES = [
-  // 在這裡放最多 5 個 https 圖片連結（.jpg/.png），例如：
-  // 'https://i.ibb.co/8nS3tYvZ/photo-2025-08-10-01-34-12.jpg',
+  'https://i.ibb.co/8nS3tYvZ/photo-2025-08-10-01-34-12.jpg',
+  // 可再加最多 4 張
 ];
 
 function buildMonthlyPromoMessages() {
