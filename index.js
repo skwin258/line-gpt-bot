@@ -404,6 +404,39 @@ const flexMessageGameSelectJson = {
   },
 };
 
+// === 新增：圖文選單關鍵字回覆（聯絡客服 / 當月優惠） ===
+// TODO: 依實際修改
+const CONTACT_URL = 'https://example.com/contact'; // ← 你的聯絡客服網址
+const MONTHLY_PROMO_IMAGES = [
+  'https://i.imgur.com/1.jpg',
+  'https://i.imgur.com/2.jpg',
+  'https://i.imgur.com/3.jpg',
+  'https://i.imgur.com/4.jpg',
+  'https://i.imgur.com/5.jpg',
+]; // 最多5張（LINE 單次回覆上限5則訊息）
+
+function buildContactMessage() {
+  return { type: 'text', text: CONTACT_URL };
+}
+function buildMonthlyPromoMessages() {
+  return MONTHLY_PROMO_IMAGES.slice(0, 5).map((u) => ({
+    type: 'image',
+    originalContentUrl: u,
+    previewImageUrl: u,
+  }));
+}
+
+// 可以擴充更多關鍵字
+function tryKeywordRoute(userMessage) {
+  if (/^聯絡客服$/i.test(userMessage)) {
+    return buildContactMessage();
+  }
+  if (/^當月優惠$/i.test(userMessage)) {
+    return buildMonthlyPromoMessages(); // 回傳陣列 -> 會一次送出多頁照片
+  }
+  return null;
+}
+
 const app = express();
 
 app.use(middleware(config));
@@ -416,14 +449,11 @@ const INVISIBLE_BLANK = '\u2800'; // Braille Pattern Blank
 
 client.replyMessage = async (replyToken, messages) => {
   try {
-    // 1) 先回一則看似空白的文字，避免觸發官方自動訊息
     await _originalReplyMessage(replyToken, { type: 'text', text: INVISIBLE_BLANK });
   } catch (err) {
     console.error('Send blank reply failed:', err?.message || err);
   }
-
   try {
-    // 2) 再 push 原本要回的內容
     const userId = replyTokenToUser.get(replyToken);
     if (userId) {
       await client.pushMessage(userId, messages);
@@ -485,6 +515,14 @@ async function handleEvents(events) {
           });
           return;
         }
+
+        // === 新增：圖文選單關鍵字（聯絡客服 / 當月優惠） ===
+        const kw = tryKeywordRoute(userMessage);
+        if (kw) {
+          await client.replyMessage(event.replyToken, kw);
+          return;
+        }
+        // === 新增結束 ===
 
         if (userMessage === '開始預測') {
           await client.replyMessage(event.replyToken, {
