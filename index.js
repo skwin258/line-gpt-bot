@@ -428,6 +428,12 @@ async function handleEvents(events) {
         const userId = event.source.userId;
         const userMessage = event.message.text.trim();
 
+        // 新增：碰到這兩個關鍵字時不由 webhook 回覆，讓官方 LINE 自動回覆
+        if (userMessage === '聯絡客服' || userMessage === '當月優惠') {
+          console.log(`跳過 webhook 回覆，交由官方回覆：${userMessage}`);
+          return;  // 直接跳過回覆
+        }
+
         const lastActive = userLastActiveTime.get(userId) || 0;
         if (now - lastActive > INACTIVE_MS) {
           userLastActiveTime.set(userId, now);
