@@ -14,34 +14,6 @@ const config = {
 const client = new Client(config);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// === [新增] 先回空白文字以抑制官方自動訊息，並用 push 補送原本訊息 ===
-const replyTokenToUser = new Map();
-const _originalReplyMessage = client.replyMessage.bind(client);
-client.replyMessage = async (replyToken, messages) => {
-  // 1) 先用 reply 回一則空白，壓掉「感謝您的訊息」官方回覆
-  try {
-    await _originalReplyMessage(replyToken, { type: 'text', text: ' ' });
-  } catch (err) {
-    console.error('Send blank reply failed:', err?.message || err);
-  }
-  // 2) 再把原本要回的內容改用 push 送給該使用者
-  try {
-    const userId = replyTokenToUser.get(replyToken);
-    const payloads = Array.isArray(messages) ? messages : [messages];
-    const filtered = payloads.filter(
-      m => !(m?.type === 'text' && typeof m?.text === 'string' && m.text.trim() === '')
-    );
-    if (userId && filtered.length > 0) {
-      await client.pushMessage(userId, filtered);
-    }
-  } catch (err) {
-    console.error('Push after blank reply failed:', err?.message || err);
-  } finally {
-    replyTokenToUser.delete(replyToken);
-  }
-};
-// === [新增結束] ===
-
 const allowedUsers = new Set([
   'U48c33cd9a93a3c6ce8e15647b8c17f08',
   'Ufaeaa194b93281c0380cfbfd59d5aee0',
@@ -85,6 +57,30 @@ const qaModeUntil = new Map();
 const INACTIVE_MS = 2 * 60 * 1000;
 const RESULT_COOLDOWN_MS = 10 * 1000;
 const QA_WINDOW_MS = 3 * 60 * 1000;
+
+// ====== 新增：先回空白，再 push 原訊息（全域套用） ======
+const replyTokenToUser = new Map();
+const _originalReplyMessage = client.replyMessage.bind(client);
+client.replyMessage = async (replyToken, messages) => {
+  // 先用 reply 回一則空白，壓掉官方自動訊息
+  try {
+    await _originalReplyMessage(replyToken, { type: 'text', text: ' ' });
+  } catch (err) {
+    console.error('Send blank reply failed:', err?.message || err);
+  }
+  // 再用 push 把原本要回的內容補送出去
+  try {
+    const userId = replyTokenToUser.get(replyToken);
+    if (userId) {
+      await client.pushMessage(userId, messages);
+    } else {
+      console.error('No userId mapped for replyToken, cannot push original messages.');
+    }
+  } catch (err) {
+    console.error('Push original message failed:', err?.message || err);
+  }
+};
+// ====== 新增結束 ======
 
 // --------- 你的各種 Flex Message 生成函式與物件，請完整放這裡 ----------
 
@@ -156,7 +152,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
       statusText = '🔥熱門';
       statusColor = '#FF3D00';
     } else if (recommendIndexes.includes(idx)) {
-      statusText = '⭐本日推薦';
+      statusText = '⭐️本日推薦';
       statusColor = '#FFD700';
     }
 
@@ -455,7 +451,8 @@ async function handleEvents(events) {
       if (event.type === 'message' && event.message.type === 'text') {
         const userId = event.source.userId;
         const userMessage = event.message.text.trim();
-        // [新增] 保存 replyToken -> userId，供覆寫後的 push 使用
+
+        // 新增：將 replyToken 對應到 userId，供覆寫後的 replyMessage 使用 push
         replyTokenToUser.set(event.replyToken, userId);
 
         const lastActive = userLastActiveTime.get(userId) || 0;
