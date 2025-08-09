@@ -58,8 +58,7 @@ const INACTIVE_MS = 2 * 60 * 1000;
 const RESULT_COOLDOWN_MS = 10 * 1000;
 const QA_WINDOW_MS = 3 * 60 * 1000;
 
-// --------- 你的各種 Flex Message 生成函式與物件，請完整放這裡 ----------
-
+// --------- Flex Message 生成函式 (完整保留) ----------
 function generateHallSelectFlex(gameName) {
   const halls = Object.keys(tableData[gameName] || {});
   return {
@@ -428,10 +427,14 @@ async function handleEvents(events) {
         const userId = event.source.userId;
         const userMessage = event.message.text.trim();
 
-        // 新增：碰到這兩個關鍵字時不由 webhook 回覆，讓官方 LINE 自動回覆
+        // 新增：碰到這兩個關鍵字時，改回覆空白訊息避免官方自動回覆
         if (userMessage === '聯絡客服' || userMessage === '當月優惠') {
-          console.log(`跳過 webhook 回覆，交由官方回覆：${userMessage}`);
-          return;  // 直接跳過回覆
+          console.log(`跳過 webhook 回覆，改回覆空白訊息，讓官方自行回覆：${userMessage}`);
+          await client.replyMessage(event.replyToken, {
+            type: 'text',
+            text: ' ',
+          });
+          return;
         }
 
         const lastActive = userLastActiveTime.get(userId) || 0;
@@ -653,9 +656,10 @@ async function handleEvents(events) {
           return;
         }
 
+        // 【新增】預設改回覆空白訊息 避免官方自動回覆「感謝您的訊息」
         await client.replyMessage(event.replyToken, {
           type: 'text',
-          text: '已關閉問答模式，需要開啟請輸入關鍵字。',
+          text: ' ',
         });
         return;
       }
