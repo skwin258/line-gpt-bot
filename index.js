@@ -410,7 +410,7 @@ https://lin.ee/6kcsWNF`;
 
 const MONTHLY_PROMO_IMAGES = [
   // 在這裡放最多 5 個 https 圖片連結（.jpg/.png），例如：
-  // 'https://your-cdn/promo/2025-08/1.jpg',
+  // 'https://i.ibb.co/8nS3tYvZ/photo-2025-08-10-01-34-12.jpg',
   // 'https://your-cdn/promo/2025-08/2.jpg',
 ];
 
