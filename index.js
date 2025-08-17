@@ -35,7 +35,6 @@ const allowedUsers = new Set([
   'U11223344556677889900aabbccddeeff',
   'U11223344556677889900aabbccddeeff',
   'U11223344556677889900aabbccddeeff',
-  'U11223344556677889900aabbccddeeff',
 ]);
 
 const tableData = {
