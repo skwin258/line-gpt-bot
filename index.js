@@ -1,19 +1,19 @@
-import pkg from '@line/bot-sdk'; 
-const { middleware, Client } = pkg;
-import dotenv from 'dotenv';
-import OpenAI from 'openai';
+// index.js  (Node 18+ / ESM)
+import 'dotenv/config';
 import express from 'express';
+import { Client, middleware } from '@line/bot-sdk';
+import OpenAI from 'openai';
 
-dotenv.config();
-
+// ====== 基本設定 ======
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
-
+const app = express();
 const client = new Client(config);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// ====== 允許使用者 ======
 const allowedUsers = new Set([
   'U48c33cd9a93a3c6ce8e15647b8c17f08',
   'Ufaeaa194b93281c0380cfbfd59d5aee0',
@@ -30,13 +30,76 @@ const allowedUsers = new Set([
   'Ud21514dc043c65d5a107d074c9035a15',
   'Udbc76d0c8fab9a80a1c6a7ef12ac5e81',
   'U11223344556677889900aabbccddeeff',
-  'U11223344556677889900aabbccddeeff',
-  'U11223344556677889900aabbccddeeff',
-  'U11223344556677889900aabbccddeeff',
-  'U11223344556677889900aabbccddeeff',
-  'U11223344556677889900aabbccddeeff',
 ]);
 
+// ====== 狀態暫存（記憶體版） ======
+const userLastActiveTime = new Map();   // userId -> ts
+const resultPressCooldown = new Map();  // userId -> ts
+const userRecentInput = new Map();      // userId -> { seq, ts }
+const qaModeUntil = new Map();          // userId -> ts
+const handledEventIds = new Map();      // eventId -> expireTs (去重)
+
+// TTL 設定
+const INACTIVE_MS = 2 * 60 * 1000;      // 2 分鐘未操作 => 視為中斷
+const RESULT_COOLDOWN_MS = 10 * 1000;   // 單局按鈕冷卻
+const QA_WINDOW_MS = 3 * 60 * 1000;     // 問答模式持續
+const EVENT_DEDUPE_MS = 5 * 60 * 1000;  // 事件去重 TTL
+
+// 小工具：事件去重
+function dedupeEvent(event) {
+  const id = event?.message?.id || event?.replyToken || `${event?.timestamp || ''}-${Math.random()}`;
+  const now = Date.now();
+  // 清舊
+  for (const [k, ts] of handledEventIds) {
+    if (ts <= now) handledEventIds.delete(k);
+  }
+  if (handledEventIds.has(id)) return true;
+  handledEventIds.set(id, now + EVENT_DEDUPE_MS);
+  return false;
+}
+
+// 小工具：安全回覆（reply 失敗改 push）
+async function safeReply(event, messages) {
+  try {
+    if (!Array.isArray(messages)) messages = [messages];
+    await client.replyMessage(event.replyToken, messages);
+  } catch (err) {
+    // 常見：replyToken 過期/重試導致無效；改用 push
+    const userId = event?.source?.userId;
+    if (userId) {
+      try {
+        await client.pushMessage(userId, messages);
+      } catch (err2) {
+        console.error('pushMessage 也失敗：', err2?.message || err2);
+      }
+    } else {
+      console.error('safeReply 無法推送：缺少 userId。原錯誤：', err?.message || err);
+    }
+  }
+}
+
+// 小工具：OpenAI 呼叫加超時
+async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutMs = 10000 } = {}) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await openai.chat.completions.create(
+      { model, messages },
+      { signal: controller.signal }
+    );
+    return resp?.choices?.[0]?.message?.content || '（AI 暫時沒有回覆）';
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      return '（AI 回應逾時，請稍後再試）';
+    }
+    console.error('OpenAI error:', err?.message || err);
+    return '（AI 回應異常，請稍後再試）';
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// ====== 遊戲資料 ======
 const tableData = {
   DG真人: {
     旗艦廳: ['百家樂D01','百家樂D02','百家樂D03','百家樂D04','百家樂D05','百家樂D06','百家樂D07','百家樂D08'],
@@ -62,18 +125,7 @@ const tableData = {
   },
 };
 
-// 狀態暫存
-const userLastActiveTime = new Map();   
-const resultPressCooldown = new Map();  
-const userRecentInput = new Map();      
-const qaModeUntil = new Map();          
-
-const INACTIVE_MS = 2 * 60 * 1000;
-const RESULT_COOLDOWN_MS = 10 * 1000;
-const QA_WINDOW_MS = 3 * 60 * 1000;
-
-// --------- Flex Message 生成 ---------
-
+// ====== Flex 產生器 ======
 function generateHallSelectFlex(gameName) {
   const halls = Object.keys(tableData[gameName] || {});
   return {
@@ -131,9 +183,6 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
     if (!hotIndexes.includes(r) && !recommendIndexes.includes(r)) recommendIndexes.push(r);
   }
 
-  const minBet = 100;
-  const maxBet = 10000;
-
   const bubbles = pageTables.map((table, idx) => {
     let statusText = '進行中';
     let statusColor = '#555555';
@@ -154,8 +203,8 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
         contents: [
           { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
           { type: 'text', text: statusText, size: 'sm', color: statusColor, margin: 'sm' },
-          { type: 'text', text: `最低下注：${minBet}元`, size: 'sm', color: '#555555', margin: 'sm' },
-          { type: 'text', text: `最高限額：${maxBet}元`, size: 'sm', color: '#555555', margin: 'sm' },
+          { type: 'text', text: `最低下注：${100}元`, size: 'sm', color: '#555555', margin: 'sm' },
+          { type: 'text', text: `最高限額：${10000}元`, size: 'sm', color: '#555555', margin: 'sm' },
           {
             type: 'button',
             action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` },
@@ -168,10 +217,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
     };
   });
 
-  const carousel = {
-    type: 'carousel',
-    contents: bubbles,
-  };
+  const carousel = { type: 'carousel', contents: bubbles };
 
   if (endIndex < tables.length) {
     carousel.contents.push({
@@ -180,21 +226,10 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
         type: 'box',
         layout: 'vertical',
         contents: [
-          {
-            type: 'text',
-            text: `還有更多牌桌，點擊下一頁`,
-            wrap: true,
-            size: 'md',
-            weight: 'bold',
-            align: 'center',
-          },
+          { type: 'text', text: '還有更多牌桌，點擊下一頁', wrap: true, size: 'md', weight: 'bold', align: 'center' },
           {
             type: 'button',
-            action: {
-              type: 'message',
-              label: '下一頁',
-              text: `nextPage|${page + 1}|${gameName}|${hallName}`,
-            },
+            action: { type: 'message', label: '下一頁', text: `nextPage|${page + 1}|${gameName}|${hallName}` },
             style: 'primary',
             color: '#00B900',
             margin: 'lg',
@@ -203,7 +238,6 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
       },
     });
   }
-
   return carousel;
 }
 
@@ -225,11 +259,7 @@ function generateInputInstructionFlex(fullTableName) {
         },
         {
           type: 'button',
-          action: {
-            type: 'message',
-            label: '開始分析',
-            text: `開始分析|${fullTableName}`,
-          },
+          action: { type: 'message', label: '開始分析', text: `開始分析|${fullTableName}` },
           style: 'primary',
           color: '#00B900',
           margin: 'lg',
@@ -245,10 +275,7 @@ function randHundreds(min, max) {
   const pick = Math.floor(Math.random() * (end - start + 1)) + start;
   return pick * 100;
 }
-
-function pickOne(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
+function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
 function generateAnalysisResultFlex(fullTableName, predicted = null) {
   const parts = String(fullTableName).split('|');
@@ -261,11 +288,7 @@ function generateAnalysisResultFlex(fullTableName, predicted = null) {
     mainPick = predicted;
   } else {
     const r = Math.random() * 100;
-    if (isDragonTiger) {
-      mainPick = (r < 50) ? '龍' : '虎';
-    } else {
-      mainPick = (r < 50) ? '莊' : '閒';
-    }
+    mainPick = isDragonTiger ? (r < 50 ? '龍' : '虎') : (r < 50 ? '莊' : '閒');
   }
 
   const attachTieSmall = Math.random() < 0.05;
@@ -273,19 +296,10 @@ function generateAnalysisResultFlex(fullTableName, predicted = null) {
 
   let betLevel = '觀望';
   let betAmount = 100;
-  if (passRate <= 50) {
-    betLevel = '觀望';
-    betAmount = 100;
-  } else if (passRate <= 65) {
-    betLevel = '小注';
-    betAmount = randHundreds(100, 1000);
-  } else if (passRate <= 75) {
-    betLevel = '中注';
-    betAmount = randHundreds(1100, 2000);
-  } else {
-    betLevel = '重注';
-    betAmount = randHundreds(2100, 3000);
-  }
+  if (passRate <= 50) { betLevel = '觀望'; betAmount = 100; }
+  else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(100, 1000); }
+  else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
+  else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
 
   const proReasonsGeneric = [
     `近期節奏偏${mainPick}，點數優勢與回補力度明顯，勝率估約${passRate}% ，資金可採階梯式進場。`,
@@ -294,16 +308,14 @@ function generateAnalysisResultFlex(fullTableName, predicted = null) {
     `盤勢慣性朝${mainPick}傾斜，短期優勢未被破壞；依趨勢交易邏輯，執行${betLevel}。`,
     `形態未出現反轉訊號，${mainPick}動能續航；配合分散下注原則，${betLevel}較佳。`,
   ];
-  const mainReason = pickOne(proReasonsGeneric);
-
   const tieReasons = [
     `點數拉鋸且對稱度提高，和局機率上緣提升；僅以極小資金對沖波動。`,
     `近期出現多次臨界點比拼，存在插針和局風險；建議和局小注防守。`,
     `節奏收斂、分差縮小，和局出現條件具備；以小注配置分散風險。`,
     `牌型分布有輕微對稱跡象，和局非主軸但可小試；資金控制為先。`,
   ];
+  const mainReason = pickOne(proReasonsGeneric);
   const tieAddOn = attachTieSmall ? pickOne(tieReasons) : '';
-
   const resultLine = `預測結果為：${mainPick}（${betLevel}）${attachTieSmall ? ' 和小下' : ''}`;
 
   const leftBtnLabel  = isDragonTiger ? '龍' : '閒';
@@ -328,27 +340,9 @@ function generateAnalysisResultFlex(fullTableName, predicted = null) {
           spacing: 'md',
           margin: 'md',
           contents: [
-            {
-              type: 'button',
-              style: 'primary',
-              color: '#2185D0',
-              action: { type: 'message', label: leftBtnLabel, text: `當局結果為|${leftBtnLabel}|${fullTableName}` },
-              flex: 1,
-            },
-            {
-              type: 'button',
-              style: 'primary',
-              color: '#21BA45',
-              action: { type: 'message', label: '和', text: `當局結果為|和|${fullTableName}` },
-              flex: 1,
-            },
-            {
-              type: 'button',
-              style: 'primary',
-              color: '#DB2828',
-              action: { type: 'message', label: rightBtnLabel, text: `當局結果為|${rightBtnLabel}|${fullTableName}` },
-              flex: 1,
-            },
+            { type: 'button', style: 'primary', color: '#2185D0', action: { type: 'message', label: leftBtnLabel, text: `當局結果為|${leftBtnLabel}|${fullTableName}` }, flex: 1 },
+            { type: 'button', style: 'primary', color: '#21BA45', action: { type: 'message', label: '和', text: `當局結果為|和|${fullTableName}` }, flex: 1 },
+            { type: 'button', style: 'primary', color: '#DB2828', action: { type: 'message', label: rightBtnLabel, text: `當局結果為|${rightBtnLabel}|${fullTableName}` }, flex: 1 },
           ],
         },
       ],
@@ -356,6 +350,7 @@ function generateAnalysisResultFlex(fullTableName, predicted = null) {
   };
 }
 
+// ====== Flex 模組（注意事項 / 遊戲入口） ======
 const flexMessageIntroJson = {
   type: 'bubble',
   body: {
@@ -381,13 +376,7 @@ const flexMessageIntroJson = {
           { type: 'text', text: '5. AI預測為輔助工具，請保持理性投注，量力而為，見好就收。', wrap: true },
         ],
       },
-      {
-        type: 'button',
-        action: { type: 'message', label: '開始預測', text: '開始預測' },
-        style: 'primary',
-        color: '#00B900',
-        margin: 'xl',
-      },
+      { type: 'button', action: { type: 'message', label: '開始預測', text: '開始預測' }, style: 'primary', color: '#00B900', margin: 'xl' },
     ],
   },
 };
@@ -417,7 +406,7 @@ const flexMessageGameSelectJson = {
   },
 };
 
-// ===== 公開關鍵字（圖文選單用）：聯絡客服 / 當月優惠 =====
+// ====== 公開關鍵字（圖文選單用） ======
 const CONTACT_REPLY_TEXT = `💥加入會員立刻領取5000折抵金💥
 有任何疑問，客服隨時為您服務。
 https://lin.ee/6kcsWNF`;
@@ -430,6 +419,7 @@ const MONTHLY_PROMO_IMAGES = [
 function buildMonthlyPromoMessages() {
   if (!Array.isArray(MONTHLY_PROMO_IMAGES) || MONTHLY_PROMO_IMAGES.length === 0) {
     return { type: 'text', text: '本月優惠圖片更新中，請稍後再試。' };
+    // 這裡回單一物件，safeReply 會幫你包成陣列
   }
   return MONTHLY_PROMO_IMAGES.slice(0, 5).map((u) => ({
     type: 'image',
@@ -437,273 +427,206 @@ function buildMonthlyPromoMessages() {
     previewImageUrl: u,
   }));
 }
-
 function tryPublicKeyword(msg) {
   if (/^聯絡客服$/i.test(msg)) return { type: 'text', text: CONTACT_REPLY_TEXT };
   if (/^當月優惠$/i.test(msg)) return buildMonthlyPromoMessages();
   return null;
 }
 
-const app = express();
-
-app.use(middleware(config));
-app.use(express.json());
-
-// webhook 路由，快速回應 200
-app.post('/webhook', (req, res) => {
+// ====== 路由 ======
+// 只在 /webhook 使用 LINE middleware（驗簽+取原始 body）
+app.post('/webhook', middleware(config), async (req, res) => {
+  // 立刻回 200，避免任何等待
   res.status(200).end();
 
-  handleEvents(req.body.events).catch((err) => {
-    console.error('事件處理錯誤:', err);
-  });
+  const events = Array.isArray(req.body?.events) ? req.body.events : [];
+  for (const event of events) {
+    // 去重：LINE 可能重送同一事件
+    if (dedupeEvent(event)) {
+      continue;
+    }
+    handleEvent(event).catch((err) => {
+      console.error('事件處理錯誤:', err?.message || err);
+    });
+  }
 });
 
-async function handleEvents(events) {
-  const now = Date.now();
-
-  await Promise.all(
-    events.map(async (event) => {
-      if (event.type === 'message' && event.message.type === 'text') {
-        const userId = event.source.userId;
-        const userMessage = event.message.text.trim();
-
-        const lastActive = userLastActiveTime.get(userId) || 0;
-        if (now - lastActive > INACTIVE_MS) {
-          userLastActiveTime.set(userId, now);
-          await client.replyMessage(event.replyToken, [
-            { type: 'text', text: '當次預測已中斷 請重新點選開始預測' },
-            { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson },
-          ]);
-          return;
-        }
-        userLastActiveTime.set(userId, now);
-
-        // 先處理「公開關鍵字」
-        const pub = tryPublicKeyword(userMessage);
-        if (pub) {
-          await client.replyMessage(event.replyToken, pub);
-          return;
-        }
-
-        if (userMessage === '會員開通' || userMessage === 'AI算牌說明') {
-          await client.replyMessage(event.replyToken, {
-            type: 'flex',
-            altText: 'SKwin AI算牌系統 注意事項',
-            contents: flexMessageIntroJson,
-          });
-          return;
-        }
-
-        if (!allowedUsers.has(userId)) {
-          await client.replyMessage(event.replyToken, {
-            type: 'text',
-            text: `您沒有使用權限，請先開通會員。\n\n您的uid為：${userId}\n\n將此id回傳至skwin-註冊送5000\n完成註冊步驟即可獲得權限，謝謝。`,
-          });
-          return;
-        }
-
-        if (userMessage === '開始預測') {
-          await client.replyMessage(event.replyToken, {
-            type: 'flex',
-            altText: '請選擇遊戲',
-            contents: flexMessageGameSelectJson,
-          });
-          return;
-        }
-
-        if (['DG真人', '歐博真人', '沙龍真人', 'WM真人'].includes(userMessage)) {
-          const hallFlex = generateHallSelectFlex(userMessage);
-          await client.replyMessage(event.replyToken, {
-            type: 'flex',
-            altText: `${userMessage} 遊戲廳選擇`,
-            contents: hallFlex,
-          });
-          return;
-        }
-
-        if (userMessage.includes('|')) {
-          const parts = userMessage.split('|');
-          if (parts.length === 2) {
-            const [gameName, hallName] = parts;
-            if (tableData[gameName] && tableData[gameName][hallName]) {
-              const tables = tableData[gameName][hallName];
-              const flexTables = generateTableListFlex(gameName, hallName, tables, 1);
-              if (flexTables.contents.length > 1) {
-                const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
-                if (nextPageBubble.body && nextPageBubble.body.contents) {
-                  const btn = nextPageBubble.body.contents.find(c => c.type === 'button');
-                  if (btn) {
-                    btn.action.text = `nextPage|2|${gameName}|${hallName}`;
-                  }
-                }
-              }
-              await client.replyMessage(event.replyToken, {
-                type: 'flex',
-                altText: `${gameName} ${hallName} 牌桌列表 頁1`,
-                contents: flexTables,
-              });
-              return;
-            }
-          }
-        }
-
-        if (userMessage.startsWith('nextPage|')) {
-          const parts = userMessage.split('|');
-          if (parts.length === 4) {
-            const page = parseInt(parts[1], 10);
-            const gameName = parts[2];
-            const hallName = parts[3];
-            if (tableData[gameName] && tableData[gameName][hallName]) {
-              const tables = tableData[gameName][hallName];
-              const flexTables = generateTableListFlex(gameName, hallName, tables, page);
-              if (flexTables.contents.length > 1) {
-                const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
-                if (nextPageBubble.body && nextPageBubble.body.contents) {
-                  const btn = nextPageBubble.body.contents.find(c => c.type === 'button');
-                  if (btn) {
-                    btn.action.text = `nextPage|${page + 1}|${gameName}|${hallName}`;
-                  }
-                }
-              }
-              await client.replyMessage(event.replyToken, {
-                type: 'flex',
-                altText: `${gameName} ${hallName} 牌桌列表 頁${page}`,
-                contents: flexTables,
-              });
-              return;
-            }
-          }
-        }
-
-        if (userMessage.startsWith('選擇桌號|')) {
-          const parts = userMessage.split('|');
-          const gameName = parts[1];
-          const hallName = parts[2];
-          const tableNumber = parts[3];
-          const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
-          const inputInstructionFlex = generateInputInstructionFlex(fullTableName);
-          await client.replyMessage(event.replyToken, {
-            type: 'flex',
-            altText: `請輸入 ${fullTableName} 前10局結果`,
-            contents: inputInstructionFlex,
-          });
-          return;
-        }
-
-        if (
-          userMessage.length >= 1 &&
-          userMessage.length <= 10 &&
-          /^[\u4e00-\u9fa5]+$/.test(userMessage) &&
-          !/^[閒莊和]+$/.test(userMessage)
-        ) {
-          await client.replyMessage(event.replyToken, {
-            type: 'text',
-            text: '偵測到無效字元，請僅使用「閒 / 莊 / 和」輸入，例：閒莊閒莊閒。',
-          });
-          return;
-        }
-
-        if (/^[閒莊和]{3,10}$/.test(userMessage)) {
-          userRecentInput.set(userId, { seq: userMessage, ts: now });
-          await client.replyMessage(event.replyToken, {
-            type: 'text',
-            text: '已接收前10局結果，請點擊「開始分析」按鈕開始計算。',
-          });
-          return;
-        }
-
-        if (/^[閒莊和]+$/.test(userMessage)) {
-          await client.replyMessage(event.replyToken, {
-            type: 'text',
-            text: '目前尚未輸入前10局內結果資訊， 無法為您做詳細分析，請先輸入前10局內閒莊和的結果，最少需要輸入前三局的結果，例:閒莊閒莊閒閒和莊。',
-          });
-          return;
-        }
-
-        if (userMessage.startsWith('開始分析|')) {
-          const fullTableName = userMessage.split('|')[1];
-          const rec = userRecentInput.get(userId);
-          if (!rec || !/^[閒莊和]{3,10}$/.test(rec.seq)) {
-            await client.replyMessage(event.replyToken, {
-              type: 'text',
-              text: '目前尚未輸入前10局內結果資訊， 無法為您做詳細分析，請先輸入前10局內閒莊和的結果，最少需要輸入前三局的結果，例:閒莊閒莊閒閒和莊。',
-            });
-            return;
-          }
-          const analysisResultFlex = generateAnalysisResultFlex(fullTableName);
-          await client.replyMessage(event.replyToken, {
-            type: 'flex',
-            altText: `分析結果 - ${fullTableName}`,
-            contents: analysisResultFlex,
-          });
-          return;
-        }
-
-        if (userMessage.startsWith('當局結果為|')) {
-          const lastPress = resultPressCooldown.get(userId) || 0;
-          if (now - lastPress < RESULT_COOLDOWN_MS) {
-            await client.replyMessage(event.replyToken, {
-              type: 'text',
-              text: '當局牌局尚未結束，請當局牌局結束再做操作。',
-            });
-            return;
-          }
-          resultPressCooldown.set(userId, now);
-
-          const parts = userMessage.split('|'); 
-          if (parts.length === 3) {
-            const fullTableName = parts[2];
-            const analysisResultFlex = generateAnalysisResultFlex(fullTableName);
-            await client.replyMessage(event.replyToken, {
-              type: 'flex',
-              altText: `分析結果 - ${fullTableName}`,
-              contents: analysisResultFlex,
-            });
-            return;
-          }
-        }
-
-        if (userMessage.startsWith('AI問與答')) {
-          qaModeUntil.set(userId, now + QA_WINDOW_MS);
-          const q = userMessage.replace(/^AI問與答\s*/, '').trim();
-          if (!q) {
-            await client.replyMessage(event.replyToken, {
-              type: 'text',
-              text: '請問您想詢問甚麼主題或是具體問題呢?',
-            });
-          } else {
-            const chatCompletion = await openai.chat.completions.create({
-              model: 'gpt-4o-mini',
-              messages: [{ role: 'user', content: q }],
-            });
-            const replyText = chatCompletion.choices[0].message.content;
-            await client.replyMessage(event.replyToken, { type: 'text', text: replyText });
-          }
-          return;
-        }
-
-        const qaUntil = qaModeUntil.get(userId) || 0;
-        if (now < qaUntil) {
-          const chatCompletion = await openai.chat.completions.create({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: userMessage }],
-          });
-          const replyText = chatCompletion.choices[0].message.content;
-          await client.replyMessage(event.replyToken, { type: 'text', text: replyText });
-          return;
-        }
-
-        await client.replyMessage(event.replyToken, {
-          type: 'text',
-          text: '已關閉問答模式，需要開啟請輸入關鍵字。',
-        });
-        return;
-      }
-    }),
-  );
-}
-
+app.get('/', (_req, res) => res.send('OK'));
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+
+// ====== 主事件處理 ======
+async function handleEvent(event) {
+  if (event.type !== 'message' || event.message.type !== 'text') return;
+
+  const now = Date.now();
+  const userId = event.source?.userId;
+  const userMessage = String(event.message.text || '').trim();
+
+  // 公開關鍵字（不需要權限也能用）
+  const pub = tryPublicKeyword(userMessage);
+  if (pub) {
+    return safeReply(event, pub);
+  }
+
+  // 權限檢查（非公開關鍵字才限制）
+  if (!allowedUsers.has(userId)) {
+    return safeReply(event, {
+      type: 'text',
+      text: `您沒有使用權限，請先開通會員。\n\n您的uid為：${userId}\n\n將此id回傳至skwin-註冊送5000\n完成註冊步驟即可獲得權限，謝謝。`,
+    });
+  }
+
+  // 首次互動：記錄活躍，不直接判定中斷
+  const lastActive = userLastActiveTime.get(userId) || 0;
+  const firstTime = lastActive === 0;
+  if (!firstTime && now - lastActive > INACTIVE_MS) {
+    userLastActiveTime.set(userId, now);
+    await safeReply(event, [
+      { type: 'text', text: '當次預測已中斷 請重新點選開始預測' },
+      { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson },
+    ]);
+    return;
+  }
+  userLastActiveTime.set(userId, now);
+
+  // 入口與說明
+  if (userMessage === '會員開通' || userMessage === 'AI算牌說明') {
+    return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
+  }
+  if (userMessage === '開始預測') {
+    return safeReply(event, { type: 'flex', altText: '請選擇遊戲', contents: flexMessageGameSelectJson });
+  }
+
+  // 遊戲 → 遊戲廳
+  if (['DG真人', '歐博真人', '沙龍真人', 'WM真人'].includes(userMessage)) {
+    const hallFlex = generateHallSelectFlex(userMessage);
+    return safeReply(event, { type: 'flex', altText: `${userMessage} 遊戲廳選擇`, contents: hallFlex });
+  }
+
+  // 遊戲|遊戲廳 → 牌桌列表（含分頁）
+  if (userMessage.includes('|')) {
+    const parts = userMessage.split('|');
+    if (parts.length === 2) {
+      const [gameName, hallName] = parts;
+      if (tableData[gameName] && tableData[gameName][hallName]) {
+        const tables = tableData[gameName][hallName];
+        const flexTables = generateTableListFlex(gameName, hallName, tables, 1);
+        // 修正「下一頁」的文字
+        if (flexTables.contents?.length > 1) {
+          const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
+          const btn = nextPageBubble?.body?.contents?.find?.(c => c.type === 'button');
+          if (btn) btn.action.text = `nextPage|2|${gameName}|${hallName}`;
+        }
+        return safeReply(event, { type: 'flex', altText: `${gameName} ${hallName} 牌桌列表 頁1`, contents: flexTables });
+      }
+    }
+  }
+
+  // 分頁
+  if (userMessage.startsWith('nextPage|')) {
+    const parts = userMessage.split('|');
+    if (parts.length === 4) {
+      const page = parseInt(parts[1], 10);
+      const gameName = parts[2];
+      const hallName = parts[3];
+      if (tableData[gameName] && tableData[gameName][hallName]) {
+        const tables = tableData[gameName][hallName];
+        const flexTables = generateTableListFlex(gameName, hallName, tables, page);
+        if (flexTables.contents?.length > 1) {
+          const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
+          const btn = nextPageBubble?.body?.contents?.find?.(c => c.type === 'button');
+          if (btn) btn.action.text = `nextPage|${page + 1}|${gameName}|${hallName}`;
+        }
+        return safeReply(event, { type: 'flex', altText: `${gameName} ${hallName} 牌桌列表 頁${page}`, contents: flexTables });
+      }
+    }
+  }
+
+  // 選擇桌號 → 要求輸入前10局
+  if (userMessage.startsWith('選擇桌號|')) {
+    const parts = userMessage.split('|');
+    const gameName = parts[1];
+    const hallName = parts[2];
+    const tableNumber = parts[3];
+    const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
+    const inputInstructionFlex = generateInputInstructionFlex(fullTableName);
+    return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前10局結果`, contents: inputInstructionFlex });
+  }
+
+  // 非法字元防呆（限制中文字但非「閒莊和」）
+  if (
+    userMessage.length >= 1 &&
+    userMessage.length <= 10 &&
+    /^[\u4e00-\u9fa5]+$/.test(userMessage) &&
+    !/^[閒莊和]+$/.test(userMessage)
+  ) {
+    return safeReply(event, { type: 'text', text: '偵測到無效字元，請僅使用「閒 / 莊 / 和」輸入，例：閒莊閒莊閒。' });
+  }
+
+  // 接收前10局（3~10字）
+  if (/^[閒莊和]{3,10}$/.test(userMessage)) {
+    userRecentInput.set(userId, { seq: userMessage, ts: now });
+    return safeReply(event, { type: 'text', text: '已接收前10局結果，請點擊「開始分析」按鈕開始計算。' });
+  }
+
+  // 僅輸入「閒莊和」但不足條件
+  if (/^[閒莊和]+$/.test(userMessage)) {
+    return safeReply(event, {
+      type: 'text',
+      text: '目前尚未輸入前10局內結果資訊， 無法為您做詳細分析，請先輸入前10局內閒莊和的結果，最少需要輸入前三局的結果，例:閒莊閒莊閒閒和莊。',
+    });
+  }
+
+  // 開始分析
+  if (userMessage.startsWith('開始分析|')) {
+    const fullTableName = userMessage.split('|')[1];
+    const rec = userRecentInput.get(userId);
+    if (!rec || !/^[閒莊和]{3,10}$/.test(rec.seq)) {
+      return safeReply(event, {
+        type: 'text',
+        text: '目前尚未輸入前10局內結果資訊， 無法為您做詳細分析，請先輸入前10局內閒莊和的結果，最少需要輸入前三局的結果，例:閒莊閒莊閒閒和莊。',
+      });
+    }
+    const analysisResultFlex = generateAnalysisResultFlex(fullTableName);
+    return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
+  }
+
+  // 回報當局結果（含冷卻）
+  if (userMessage.startsWith('當局結果為|')) {
+    const lastPress = resultPressCooldown.get(userId) || 0;
+    if (now - lastPress < RESULT_COOLDOWN_MS) {
+      return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
+    }
+    resultPressCooldown.set(userId, now);
+
+    const parts = userMessage.split('|');
+    if (parts.length === 3) {
+      const fullTableName = parts[2];
+      const analysisResultFlex = generateAnalysisResultFlex(fullTableName);
+      return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
+    }
+  }
+
+  // 問答模式開關
+  if (userMessage.startsWith('AI問與答')) {
+    qaModeUntil.set(userId, now + QA_WINDOW_MS);
+    const q = userMessage.replace(/^AI問與答\s*/, '').trim();
+    if (!q) {
+      return safeReply(event, { type: 'text', text: '請問您想詢問甚麼主題或是具體問題呢?' });
+    } else {
+      const replyText = await callOpenAIWithTimeout([{ role: 'user', content: q }]);
+      return safeReply(event, { type: 'text', text: replyText });
+    }
+  }
+
+  // 問答模式內
+  const qaUntil = qaModeUntil.get(userId) || 0;
+  if (now < qaUntil) {
+    const replyText = await callOpenAIWithTimeout([{ role: 'user', content: userMessage }]);
+    return safeReply(event, { type: 'text', text: replyText });
+  }
+
+  // 預設回覆
+  return safeReply(event, { type: 'text', text: '已關閉問答模式，需要開啟請輸入關鍵字。' });
+}
