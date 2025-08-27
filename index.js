@@ -34,7 +34,6 @@ const allowedUsers = new Set([
   'U11223344556677889900aabbccddeeff',
   'U11223344556677889900aabbccddeeff',
   'U11223344556677889900aabbccddeeff',
-  'U11223344556677889900aabbccddeeff',
 ]);
 
 // ====== 狀態暫存（記憶體版） ======
