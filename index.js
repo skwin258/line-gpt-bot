@@ -67,14 +67,10 @@ async function safeReply(event, messages) {
     if (!Array.isArray(messages)) messages = [messages];
     await client.replyMessage(event.replyToken, messages);
   } catch (err) {
-    // 常見：replyToken 過期/重試導致無效；改用 push
     const userId = event?.source?.userId;
     if (userId) {
-      try {
-        await client.pushMessage(userId, messages);
-      } catch (err2) {
-        console.error('pushMessage 也失敗：', err2?.message || err2);
-      }
+      try { await client.pushMessage(userId, messages); }
+      catch (err2) { console.error('pushMessage 也失敗：', err2?.message || err2); }
     } else {
       console.error('safeReply 無法推送：缺少 userId。原錯誤：', err?.message || err);
     }
@@ -92,9 +88,7 @@ async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutM
     );
     return resp?.choices?.[0]?.message?.content || '（AI 暫時沒有回覆）';
   } catch (err) {
-    if (err.name === 'AbortError') {
-      return '（AI 回應逾時，請稍後再試）';
-    }
+    if (err.name === 'AbortError') return '（AI 回應逾時，請稍後再試）';
     console.error('OpenAI error:', err?.message || err);
     return '（AI 回應異常，請稍後再試）';
   } finally {
@@ -137,14 +131,7 @@ function generateHallSelectFlex(gameName) {
       type: 'box',
       layout: 'vertical',
       contents: [
-        {
-          type: 'text',
-          text: `遊戲：${gameName}`,
-          weight: 'bold',
-          color: '#00B900',
-          size: 'lg',
-          align: 'center',
-        },
+        { type: 'text', text: `遊戲：${gameName}`, weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
         { type: 'separator', margin: 'md' },
         { type: 'text', text: '請選擇遊戲廳', weight: 'bold', align: 'center', margin: 'md' },
         {
@@ -180,7 +167,6 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
     const r = Math.floor(Math.random() * pageTables.length);
     if (!hotIndexes.includes(r)) hotIndexes.push(r);
   }
-
   while (recommendIndexes.length < recommendCount) {
     const r = Math.floor(Math.random() * pageTables.length);
     if (!hotIndexes.includes(r) && !recommendIndexes.includes(r)) recommendIndexes.push(r);
@@ -189,14 +175,8 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
   const bubbles = pageTables.map((table, idx) => {
     let statusText = '進行中';
     let statusColor = '#555555';
-
-    if (hotIndexes.includes(idx)) {
-      statusText = '🔥熱門';
-      statusColor = '#FF3D00';
-    } else if (recommendIndexes.includes(idx)) {
-      statusText = '⭐️本日推薦';
-      statusColor = '#FFD700';
-    }
+    if (hotIndexes.includes(idx)) { statusText = '🔥熱門'; statusColor = '#FF3D00'; }
+    else if (recommendIndexes.includes(idx)) { statusText = '⭐️本日推薦'; statusColor = '#FFD700'; }
 
     return {
       type: 'bubble',
@@ -208,20 +188,13 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
           { type: 'text', text: statusText, size: 'sm', color: statusColor, margin: 'sm' },
           { type: 'text', text: `最低下注：${100}元`, size: 'sm', color: '#555555', margin: 'sm' },
           { type: 'text', text: `最高限額：${10000}元`, size: 'sm', color: '#555555', margin: 'sm' },
-          {
-            type: 'button',
-            action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` },
-            style: 'primary',
-            color: '#00B900',
-            margin: 'md',
-          },
+          { type: 'button', action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` }, style: 'primary', color: '#00B900', margin: 'md' },
         ],
       },
     };
   });
 
   const carousel = { type: 'carousel', contents: bubbles };
-
   if (endIndex < tables.length) {
     carousel.contents.push({
       type: 'bubble',
@@ -230,13 +203,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
         layout: 'vertical',
         contents: [
           { type: 'text', text: '還有更多牌桌，點擊下一頁', wrap: true, size: 'md', weight: 'bold', align: 'center' },
-          {
-            type: 'button',
-            action: { type: 'message', label: '下一頁', text: `nextPage|${page + 1}|${gameName}|${hallName}` },
-            style: 'primary',
-            color: '#00B900',
-            margin: 'lg',
-          },
+          { type: 'button', action: { type: 'message', label: '下一頁', text: `nextPage|${page + 1}|${gameName}|${hallName}` }, style: 'primary', color: '#00B900', margin: 'lg' },
         ],
       },
     });
@@ -253,20 +220,8 @@ function generateInputInstructionFlex(fullTableName) {
       contents: [
         { type: 'text', text: '分析中', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
         { type: 'text', text: `桌號：${fullTableName}`, margin: 'md', color: '#555555' },
-        { 
-          type: 'text', 
-          text: '請輸入前10局閒莊和的結果，最少需要輸入前三局，例:閒莊閒莊閒莊閒莊和閒', 
-          margin: 'md', 
-          color: '#555555',
-          wrap: true
-        },
-        {
-          type: 'button',
-          action: { type: 'message', label: '開始分析', text: `開始分析|${fullTableName}` },
-          style: 'primary',
-          color: '#00B900',
-          margin: 'lg',
-        },
+        { type: 'text', text: '請輸入前10局閒莊和的結果，最少需要輸入前三局，例:閒莊閒莊閒莊閒莊和閒', margin: 'md', color: '#555555', wrap: true },
+        { type: 'button', action: { type: 'message', label: '開始分析', text: `開始分析|${fullTableName}` }, style: 'primary', color: '#00B900', margin: 'lg' },
       ],
     },
   };
@@ -443,14 +398,7 @@ function buildMonthlyPromoMessages() {
     previewImageUrl: u,
   }));
 }
-function tryPublicKeyword(msg) {
-  if (/^聯絡客服$/i.test(msg)) return { type: 'text', text: CONTACT_REPLY_TEXT };
-  if (/^當月優惠$/i.test(msg)) return buildMonthlyPromoMessages();
-  if (/^報表$/i.test(msg)) return buildReportIntroFlex(); // 新增：報表入口
-  return null;
-}
 
-// ====== 報表 Flex 與工具（新增） ======
 function buildReportIntroFlex() {
   return {
     type: 'flex',
@@ -482,8 +430,14 @@ function buildReportIntroFlex() {
   };
 }
 
+function tryPublicKeyword(msg) {
+  if (/^聯絡客服$/i.test(msg)) return { type: 'text', text: CONTACT_REPLY_TEXT };
+  if (/^當月優惠$/i.test(msg)) return buildMonthlyPromoMessages();
+  if (/^報表$/i.test(msg)) return buildReportIntroFlex();
+  return null;
+}
+
 function extractSimpleTableName(table) {
-  // 將「百家樂D01」→「D01」，「百家樂C03」→「C03」，否則回傳原字串
   const m = /([A-Z]\d{2,3})$/i.exec(table || '');
   return m ? m[1].toUpperCase() : table || '';
 }
@@ -542,28 +496,20 @@ function getTodayRangeTimestamp() {
   // 以 Asia/Taipei 時區換算今日 12:00–23:59:59.999
   const tz = 'Asia/Taipei';
   const now = new Date();
-  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now); // YYYY-MM-DD
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   const [y, m, d] = fmt.split('-').map(n => parseInt(n, 10));
-  const start = new Date(Date.UTC(y, m - 1, d, 4, 0, 0, 0)); // 台北 12:00 即 UTC+8 → UTC 04:00
-  const end   = new Date(Date.UTC(y, m - 1, d, 15, 59, 59, 999)); // 台北 23:59:59.999 → UTC 15:59:59.999
+  const start = new Date(Date.UTC(y, m - 1, d, 4, 0, 0, 0));        // 台北 12:00 -> UTC+8 = 04:00 UTC
+  const end   = new Date(Date.UTC(y, m - 1, d, 15, 59, 59, 999));  // 台北 23:59:59.999 -> 15:59:59.999 UTC
   return { startMs: +start, endMs: +end };
 }
 
 // ====== 路由 ======
-// 只在 /webhook 使用 LINE middleware（驗簽+取原始 body）
 app.post('/webhook', middleware(config), async (req, res) => {
-  // 立刻回 200，避免任何等待
   res.status(200).end();
-
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   for (const event of events) {
-    // 去重：LINE 可能重送同一事件
-    if (dedupeEvent(event)) {
-      continue;
-    }
-    handleEvent(event).catch((err) => {
-      console.error('事件處理錯誤:', err?.message || err);
-    });
+    if (dedupeEvent(event)) continue;
+    handleEvent(event).catch((err) => console.error('事件處理錯誤:', err?.message || err));
   }
 });
 
@@ -579,13 +525,11 @@ async function handleEvent(event) {
   const userId = event.source?.userId;
   const userMessage = String(event.message.text || '').trim();
 
-  // 公開關鍵字（不需要權限也能用）
+  // 公開關鍵字
   const pub = tryPublicKeyword(userMessage);
-  if (pub) {
-    return safeReply(event, pub);
-  }
+  if (pub) return safeReply(event, pub);
 
-  // 權限檢查（非公開關鍵字才限制）
+  // 權限檢查
   if (!allowedUsers.has(userId)) {
     return safeReply(event, {
       type: 'text',
@@ -593,7 +537,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 首次互動：記錄活躍，不直接判定中斷
+  // 活躍檢查
   const lastActive = userLastActiveTime.get(userId) || 0;
   const firstTime = lastActive === 0;
   if (!firstTime && now - lastActive > INACTIVE_MS) {
@@ -614,6 +558,32 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: '請選擇遊戲', contents: flexMessageGameSelectJson });
   }
 
+  // === 先處理報表關鍵字（避免被「無效字元」規則擋掉） ===
+  if (userMessage === '當局報表') {
+    const full = userCurrentTable.get(userId);
+    if (!full) return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
+    const [system, hall, table] = full.split('|');
+    const logs = (userBetLogs.get(userId) || []).filter(x => x.fullTableName === full);
+    const totalAmount = logs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const sumColumns = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+    return safeReply(event, buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns));
+  }
+
+  if (userMessage === '本日報表') {
+    const logs = userBetLogs.get(userId) || [];
+    const { startMs, endMs } = getTodayRangeTimestamp();
+    const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
+    if (todayLogs.length === 0) {
+      return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
+    }
+    const systems = [...new Set(todayLogs.map(x => x.system))];
+    const tables  = [...new Set(todayLogs.map(x => x.table))];
+    const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const sumColumns = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+    return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
+  }
+  // === 報表關鍵字處理到此 ===
+
   // 遊戲 → 遊戲廳
   if (['DG真人', '歐博真人', '沙龍真人', 'WM真人'].includes(userMessage)) {
     const hallFlex = generateHallSelectFlex(userMessage);
@@ -628,7 +598,6 @@ async function handleEvent(event) {
       if (tableData[gameName] && tableData[gameName][hallName]) {
         const tables = tableData[gameName][hallName];
         const flexTables = generateTableListFlex(gameName, hallName, tables, 1);
-        // 修正「下一頁」的文字
         if (flexTables.contents?.length > 1) {
           const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
           const btn = nextPageBubble?.body?.contents?.find?.(c => c.type === 'button');
@@ -666,13 +635,14 @@ async function handleEvent(event) {
     const hallName = parts[2];
     const tableNumber = parts[3];
     const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
-    userCurrentTable.set(userId, fullTableName); // 記錄目前桌別
-    const inputInstructionFlex = generateInputInstructionFlex(fullTableName);
-    return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前10局結果`, contents: inputInstructionFlex });
+    userCurrentTable.set(userId, fullTableName);
+    return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前10局結果`, contents: generateInputInstructionFlex(fullTableName) });
   }
 
-  // 非法字元防呆（限制中文字但非「閒莊和」）
+  // === 非法字元防呆（排除報表關鍵字） ===
+  const isReportKeyword = (userMessage === '當局報表' || userMessage === '本日報表');
   if (
+    !isReportKeyword &&
     userMessage.length >= 1 &&
     userMessage.length <= 10 &&
     /^[\u4e00-\u9fa5]+$/.test(userMessage) &&
@@ -726,13 +696,7 @@ async function handleEvent(event) {
       if (last && last.fullTableName === fullTableName) {
         const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
         const money = cols * 100;
-        const entry = {
-          ...last,
-          actual,
-          columns: cols,
-          money,
-          ts: Date.now(),
-        };
+        const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
         const arr = userBetLogs.get(userId) || [];
         arr.push(entry);
         userBetLogs.set(userId, arr);
@@ -743,46 +707,13 @@ async function handleEvent(event) {
     }
   }
 
-  // === 報表：當局 ===
-  if (userMessage === '當局報表') {
-    const full = userCurrentTable.get(userId);
-    if (!full) {
-      return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
-    }
-    const [system, hall, table] = full.split('|');
-    const logs = (userBetLogs.get(userId) || []).filter(x => x.fullTableName === full);
-    const totalAmount = logs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-    const sumColumns = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-    const flex = buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns);
-    return safeReply(event, flex);
-  }
-
-  // === 報表：本日 ===
-  if (userMessage === '本日報表') {
-    const logs = userBetLogs.get(userId) || [];
-    const { startMs, endMs } = getTodayRangeTimestamp();
-    const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
-    if (todayLogs.length === 0) {
-      return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
-    }
-    const systems = [...new Set(todayLogs.map(x => x.system))];
-    const tables  = [...new Set(todayLogs.map(x => x.table))];
-    const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-    const sumColumns = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-    const flex = buildDailyReportFlex(systems, tables, totalAmount, sumColumns);
-    return safeReply(event, flex);
-  }
-
   // 問答模式開關
   if (userMessage.startsWith('AI問與答')) {
     qaModeUntil.set(userId, now + QA_WINDOW_MS);
     const q = userMessage.replace(/^AI問與答\s*/, '').trim();
-    if (!q) {
-      return safeReply(event, { type: 'text', text: '請問您想詢問甚麼主題或是具體問題呢?' });
-    } else {
-      const replyText = await callOpenAIWithTimeout([{ role: 'user', content: q }]);
-      return safeReply(event, { type: 'text', text: replyText });
-    }
+    if (!q) return safeReply(event, { type: 'text', text: '請問您想詢問甚麼主題或是具體問題呢?' });
+    const replyText = await callOpenAIWithTimeout([{ role: 'user', content: q }]);
+    return safeReply(event, { type: 'text', text: replyText });
   }
 
   // 問答模式內
