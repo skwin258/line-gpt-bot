@@ -37,6 +37,11 @@ const userRecentInput = new Map();      // userId -> { seq, ts }
 const qaModeUntil = new Map();          // userId -> ts
 const handledEventIds = new Map();      // eventId -> expireTs (去重)
 
+// === 新增：報表所需暫存 ===
+const userCurrentTable = new Map(); // userId -> fullTableName "系統|廳|桌"
+const userLastRecommend = new Map(); // userId -> { fullTableName, side, amount, ts }
+const userBetLogs = new Map();       // userId -> [ { system, hall, table, fullTableName, ts, side, amount, actual, columns, money } ]
+
 // TTL 設定
 const INACTIVE_MS = 2 * 60 * 1000;      // 2 分鐘未操作 => 視為中斷
 const RESULT_COOLDOWN_MS = 10 * 1000;   // 單局按鈕冷卻
@@ -275,10 +280,12 @@ function randHundreds(min, max) {
 }
 function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-function generateAnalysisResultFlex(fullTableName, predicted = null) {
+// === 新增：把推薦結果寫入暫存，供報表使用 ===
+function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
   const parts = String(fullTableName).split('|');
   const gameName = parts[0] || fullTableName;
   const hallName = parts[1] || '';
+  const tableName = parts[2] || '';
   const isDragonTiger = hallName === '龍虎鬥';
 
   let mainPick;
@@ -298,6 +305,18 @@ function generateAnalysisResultFlex(fullTableName, predicted = null) {
   else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(100, 1000); }
   else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
   else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
+
+  // 紀錄使用者目前桌別 & 推薦
+  userCurrentTable.set(userId, fullTableName);
+  userLastRecommend.set(userId, {
+    fullTableName,
+    system: gameName,
+    hall: hallName,
+    table: tableName,
+    side: mainPick,
+    amount: betAmount,
+    ts: Date.now(),
+  });
 
   const proReasonsGeneric = [
     `近期節奏偏${mainPick}，點數優勢與回補力度明顯，勝率估約${passRate}% ，資金可採階梯式進場。`,
@@ -417,7 +436,6 @@ const MONTHLY_PROMO_IMAGES = [
 function buildMonthlyPromoMessages() {
   if (!Array.isArray(MONTHLY_PROMO_IMAGES) || MONTHLY_PROMO_IMAGES.length === 0) {
     return { type: 'text', text: '本月優惠圖片更新中，請稍後再試。' };
-    // 這裡回單一物件，safeReply 會幫你包成陣列
   }
   return MONTHLY_PROMO_IMAGES.slice(0, 5).map((u) => ({
     type: 'image',
@@ -428,7 +446,107 @@ function buildMonthlyPromoMessages() {
 function tryPublicKeyword(msg) {
   if (/^聯絡客服$/i.test(msg)) return { type: 'text', text: CONTACT_REPLY_TEXT };
   if (/^當月優惠$/i.test(msg)) return buildMonthlyPromoMessages();
+  if (/^報表$/i.test(msg)) return buildReportIntroFlex(); // 新增：報表入口
   return null;
+}
+
+// ====== 報表 Flex 與工具（新增） ======
+function buildReportIntroFlex() {
+  return {
+    type: 'flex',
+    altText: '報表功能',
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: '報表', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+          { type: 'text', text: '說明：100元為1柱', margin: 'sm' },
+          { type: 'text', text: '按下「當局報表」即計算當前牌桌的勝負值', margin: 'sm', wrap: true },
+          { type: 'text', text: '按下「本日報表」即計算今日12:00-23:59所有牌桌的勝負值', margin: 'sm', wrap: true },
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'md',
+            margin: 'md',
+            contents: [
+              { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '當局報表', text: '當局報表' }, flex: 1 },
+              { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '本日報表', text: '本日報表' }, flex: 1 },
+            ],
+          },
+        ],
+      },
+    },
+  };
+}
+
+function extractSimpleTableName(table) {
+  // 將「百家樂D01」→「D01」，「百家樂C03」→「C03」，否則回傳原字串
+  const m = /([A-Z]\d{2,3})$/i.exec(table || '');
+  return m ? m[1].toUpperCase() : table || '';
+}
+
+function buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns) {
+  const money = sumColumns * 100;
+  return {
+    type: 'flex',
+    altText: '當局報表',
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: '(當局報表)', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+          { type: 'text', text: `廳別：${hall}`, margin: 'sm' },
+          { type: 'text', text: `桌別：${extractSimpleTableName(table)}`, margin: 'sm' },
+          { type: 'text', text: `總下注金額：${totalAmount}`, margin: 'sm' },
+          { type: 'text', text: `輸贏金額：${money >= 0 ? '+' : ''}${money}`, margin: 'sm' },
+          { type: 'text', text: `柱碼：${sumColumns >= 0 ? '+' : ''}${sumColumns}柱`, margin: 'sm' },
+        ],
+      },
+    },
+  };
+}
+
+function buildDailyReportFlex(systems, tables, totalAmount, sumColumns) {
+  const money = sumColumns * 100;
+  return {
+    type: 'flex',
+    altText: '本日報表',
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: '(本日報表)', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+          { type: 'text', text: `系統：${systems.join('/')}`, margin: 'sm', wrap: true },
+          { type: 'text', text: `桌別：${tables.map(extractSimpleTableName).join('/')}`, margin: 'sm', wrap: true },
+          { type: 'text', text: `總下注金額：${totalAmount}`, margin: 'sm' },
+          { type: 'text', text: `輸贏金額：${money >= 0 ? '+' : ''}${money}`, margin: 'sm' },
+          { type: 'text', text: `柱碼：${sumColumns >= 0 ? '+' : ''}${sumColumns}柱`, margin: 'sm' },
+        ],
+      },
+    },
+  };
+}
+
+function columnsFromAmount(amount) {
+  return Math.round(Number(amount || 0) / 100);
+}
+
+function getTodayRangeTimestamp() {
+  // 以 Asia/Taipei 時區換算今日 12:00–23:59:59.999
+  const tz = 'Asia/Taipei';
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now); // YYYY-MM-DD
+  const [y, m, d] = fmt.split('-').map(n => parseInt(n, 10));
+  const start = new Date(Date.UTC(y, m - 1, d, 4, 0, 0, 0)); // 台北 12:00 即 UTC+8 → UTC 04:00
+  const end   = new Date(Date.UTC(y, m - 1, d, 15, 59, 59, 999)); // 台北 23:59:59.999 → UTC 15:59:59.999
+  return { startMs: +start, endMs: +end };
 }
 
 // ====== 路由 ======
@@ -548,6 +666,7 @@ async function handleEvent(event) {
     const hallName = parts[2];
     const tableNumber = parts[3];
     const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
+    userCurrentTable.set(userId, fullTableName); // 記錄目前桌別
     const inputInstructionFlex = generateInputInstructionFlex(fullTableName);
     return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前10局結果`, contents: inputInstructionFlex });
   }
@@ -586,11 +705,11 @@ async function handleEvent(event) {
         text: '目前尚未輸入前10局內結果資訊， 無法為您做詳細分析，請先輸入前10局內閒莊和的結果，最少需要輸入前三局的結果，例:閒莊閒莊閒閒和莊。',
       });
     }
-    const analysisResultFlex = generateAnalysisResultFlex(fullTableName);
+    const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果（含冷卻）
+  // 回報當局結果（含冷卻） → 記錄戰績
   if (userMessage.startsWith('當局結果為|')) {
     const lastPress = resultPressCooldown.get(userId) || 0;
     if (now - lastPress < RESULT_COOLDOWN_MS) {
@@ -600,10 +719,58 @@ async function handleEvent(event) {
 
     const parts = userMessage.split('|');
     if (parts.length === 3) {
+      const actual = parts[1]; // 閒/莊/和
       const fullTableName = parts[2];
-      const analysisResultFlex = generateAnalysisResultFlex(fullTableName);
+      const last = userLastRecommend.get(userId);
+
+      if (last && last.fullTableName === fullTableName) {
+        const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
+        const money = cols * 100;
+        const entry = {
+          ...last,
+          actual,
+          columns: cols,
+          money,
+          ts: Date.now(),
+        };
+        const arr = userBetLogs.get(userId) || [];
+        arr.push(entry);
+        userBetLogs.set(userId, arr);
+      }
+
+      const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
       return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
     }
+  }
+
+  // === 報表：當局 ===
+  if (userMessage === '當局報表') {
+    const full = userCurrentTable.get(userId);
+    if (!full) {
+      return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
+    }
+    const [system, hall, table] = full.split('|');
+    const logs = (userBetLogs.get(userId) || []).filter(x => x.fullTableName === full);
+    const totalAmount = logs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const sumColumns = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+    const flex = buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns);
+    return safeReply(event, flex);
+  }
+
+  // === 報表：本日 ===
+  if (userMessage === '本日報表') {
+    const logs = userBetLogs.get(userId) || [];
+    const { startMs, endMs } = getTodayRangeTimestamp();
+    const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
+    if (todayLogs.length === 0) {
+      return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
+    }
+    const systems = [...new Set(todayLogs.map(x => x.system))];
+    const tables  = [...new Set(todayLogs.map(x => x.table))];
+    const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const sumColumns = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+    const flex = buildDailyReportFlex(systems, tables, totalAmount, sumColumns);
+    return safeReply(event, flex);
   }
 
   // 問答模式開關
