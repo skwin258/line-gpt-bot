@@ -13,6 +13,13 @@ const app = express();
 const client = new Client(config);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// ---- 伺服器層優化：降低 499（client closed request）機率 ----
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+// Node 原生 HTTP server keep-alive（在最下方 listen 後設定）
+let serverRef = null;
+
 // ====== 允許使用者 ======
 const allowedUsers = new Set([
   'U48c33cd9a93a3c6ce8e15647b8c17f08',
@@ -42,6 +49,10 @@ const userCurrentTable = new Map(); // userId -> fullTableName "系統|廳|桌"
 const userLastRecommend = new Map(); // userId -> { fullTableName, side, amount, ts }
 const userBetLogs = new Map();       // userId -> [ { system, hall, table, fullTableName, ts, side, amount, actual, columns, money } ]
 
+// ====== 節流/頻率限制（基礎防抖，避免高頻觸發 499） ======
+const userLastMsgAt = new Map(); // userId -> ts
+const USER_MIN_INTERVAL_MS = 250; // 0.25s
+
 // TTL 設定
 const INACTIVE_MS = 2 * 60 * 1000;      // 2 分鐘未操作 => 視為中斷
 const RESULT_COOLDOWN_MS = 10 * 1000;   // 單局按鈕冷卻
@@ -50,9 +61,11 @@ const EVENT_DEDUPE_MS = 5 * 60 * 1000;  // 事件去重 TTL
 
 // 小工具：事件去重
 function dedupeEvent(event) {
-  const id = event?.message?.id || event?.replyToken || `${event?.timestamp || ''}-${Math.random()}`;
+  const id = event?.deliveryContext?.isRedelivery
+    ? `${event?.message?.id || event?.replyToken}-R`
+    : (event?.message?.id || event?.replyToken || `${event?.timestamp || ''}-${Math.random()}`);
+
   const now = Date.now();
-  // 清舊
   for (const [k, ts] of handledEventIds) {
     if (ts <= now) handledEventIds.delete(k);
   }
@@ -61,38 +74,81 @@ function dedupeEvent(event) {
   return false;
 }
 
-// 小工具：安全回覆（reply 失敗改 push）
-async function safeReply(event, messages) {
-  try {
-    if (!Array.isArray(messages)) messages = [messages];
-    await client.replyMessage(event.replyToken, messages);
-  } catch (err) {
-    const userId = event?.source?.userId;
-    if (userId) {
-      try { await client.pushMessage(userId, messages); }
-      catch (err2) { console.error('pushMessage 也失敗：', err2?.message || err2); }
-    } else {
-      console.error('safeReply 無法推送：缺少 userId。原錯誤：', err?.message || err);
+// ---- LINE API 呼叫重試器 ----
+async function withRetry(fn, { tries = 3, baseDelay = 150 } = {}) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const status = err?.statusCode || err?.originalError?.response?.status || err?.status;
+      // 對於 429/5xx/499 才重試；400/401/403 等直接放棄
+      if (![429, 499, 500, 502, 503, 504].includes(status)) break;
+      const delay = baseDelay * Math.pow(2, i) + Math.floor(Math.random() * 100);
+      await new Promise(r => setTimeout(r, delay));
     }
+  }
+  throw lastErr;
+}
+
+// 小工具：安全回覆（reply 失敗改 push，並加入重試）
+async function safeReply(event, messages) {
+  if (!Array.isArray(messages)) messages = [messages];
+
+  // 一個事件只嘗試 reply 一次，避免重複使用同一 replyToken
+  const replyToken = event.replyToken;
+  const tryReply = async () => {
+    try {
+      await withRetry(() => client.replyMessage(replyToken, messages));
+      return true;
+    } catch (err) {
+      const code = err?.statusCode || err?.originalError?.response?.status;
+      // 可能是 replyToken 失效/逾時/已使用（400/410/422）→ 直接走 push
+      if ([400, 410, 422, 429, 499, 500, 502, 503, 504].includes(code)) {
+        return false;
+      }
+      // 其他錯誤也改走 push
+      return false;
+    }
+  };
+
+  let replied = false;
+  try {
+    replied = await tryReply();
+  } catch (e) {
+    replied = false;
+  }
+
+  if (!replied) {
+    const userId = event?.source?.userId;
+    if (!userId) {
+      console.error('safeReply: 缺少 userId，無法 push。');
+      return;
+    }
+    await withRetry(() => client.pushMessage(userId, messages)).catch((err2) => {
+      console.error('pushMessage 失敗：', err2?.message || err2);
+    });
   }
 }
 
-// 小工具：OpenAI 呼叫加超時
-async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutMs = 10000 } = {}) {
+// 小工具：OpenAI 呼叫加超時（縮短為 6s，避免阻塞）
+async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutMs = 6000 } = {}) {
   const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await openai.chat.completions.create(
-      { model, messages },
+      { model, messages, temperature: 0.7, top_p: 0.95 },
       { signal: controller.signal }
     );
     return resp?.choices?.[0]?.message?.content || '（AI 暫時沒有回覆）';
   } catch (err) {
-    if (err.name === 'AbortError') return '（AI 回應逾時，請稍後再試）';
+    const name = err?.name || '';
+    if (name === 'AbortError') return '（AI 回應逾時，請稍後再試）';
     console.error('OpenAI error:', err?.message || err);
     return '（AI 回應異常，請稍後再試）';
   } finally {
-    clearTimeout(t);
+    clearTimeout(timer);
   }
 }
 
@@ -185,7 +241,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
         layout: 'vertical',
         contents: [
           { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
-          { type: 'text', text: statusText, size: 'sm', color: statusColor, margin: 'sm' },
+          { type: 'text', text: statusText, size: 'sm', color: '#555555', margin: 'sm' },
           { type: 'text', text: `最低下注：${100}元`, size: 'sm', color: '#555555', margin: 'sm' },
           { type: 'text', text: `最高限額：${10000}元`, size: 'sm', color: '#555555', margin: 'sm' },
           { type: 'button', action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` }, style: 'primary', color: '#00B900', margin: 'md' },
@@ -505,17 +561,33 @@ function getTodayRangeTimestamp() {
 
 // ====== 路由 ======
 app.post('/webhook', middleware(config), async (req, res) => {
+  // 立刻回 200，避免 LINE 等待
   res.status(200).end();
+
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   for (const event of events) {
     if (dedupeEvent(event)) continue;
-    handleEvent(event).catch((err) => console.error('事件處理錯誤:', err?.message || err));
+
+    // 基礎頻率限制：0.25s 內重複訊息直接忽略（避免連點）
+    const uid = event?.source?.userId || 'unknown';
+    const now = Date.now();
+    const last = userLastMsgAt.get(uid) || 0;
+    if (now - last < USER_MIN_INTERVAL_MS) continue;
+    userLastMsgAt.set(uid, now);
+
+    // 背景處理，不阻塞 webhook 回應
+    handleEvent(event).catch((err) => {
+      console.error('事件處理錯誤:', err?.message || err);
+    });
   }
 });
 
 app.get('/', (_req, res) => res.send('OK'));
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+serverRef = app.listen(PORT, () => console.log(`Server running on ${PORT}`));
+// 調整 keep-alive，降低中間層 499
+serverRef.keepAliveTimeout = 65000;
+serverRef.headersTimeout = 66000;
 
 // ====== 主事件處理 ======
 async function handleEvent(event) {
@@ -558,7 +630,7 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: '請選擇遊戲', contents: flexMessageGameSelectJson });
   }
 
-  // === 先處理報表關鍵字（避免被「無效字元」規則擋掉） ===
+  // === 報表關鍵字（放在前面避免被字元檢查攔截） ===
   if (userMessage === '當局報表') {
     const full = userCurrentTable.get(userId);
     if (!full) return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
@@ -726,3 +798,11 @@ async function handleEvent(event) {
   // 預設回覆
   return safeReply(event, { type: 'text', text: '已關閉問答模式，需要開啟請輸入關鍵字。' });
 }
+
+// ====== 全域錯誤處理（避免程序當機） ======
+process.on('unhandledRejection', (reason) => {
+  console.error('UnhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('UncaughtException:', err);
+});
