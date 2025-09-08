@@ -33,6 +33,7 @@ const allowedUsers = new Set([
   'Uc3be515b0b2e4c8807ad8552d40d1714',
   'U66c38a1baa388cccfd060c0206032955',
   'U2031c52d282931d135d54e21c5657184',
+  'Ua8be399c8ea2af753f0b9417992ff449',
 ]);
 
 // ====== 狀態暫存（記憶體版） ======
