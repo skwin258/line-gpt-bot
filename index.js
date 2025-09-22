@@ -32,8 +32,6 @@ const allowedUsers = new Set([
   'Udbc76d0c8fab9a80a1c6a7ef12ac5e81',
   'Uc3be515b0b2e4c8807ad8552d40d1714',
   'U66c38a1baa388cccfd060c0206032955',
-  'Uec3a1bbe7c15d34604dbde6b2d4e572a',
-  'U27e4285f91ccbac194b773f794035284',
   'U2031c52d282931d135d54e21c5657184',
 ]);
 
