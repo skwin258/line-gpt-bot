@@ -570,25 +570,25 @@ async function handleEvent(event) {
       }
     }
 
-    // 選擇桌號 -> 群組提示 + 私訊管理員面板
-    if (userMessage.startsWith('選擇桌號|')) {
-      if (!isAdmin(userId)) return safeReply(event, { type: 'text', text: '只有管理員可以選擇桌號。' });
-      const parts = userMessage.split('|');
-      const gameName = parts[1];
-      const hallName = parts[2];
-      const tableNumber = parts[3];
-      const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
+// 選擇桌號 -> 直接在群組貼出「管理員面板」Flex（非管理員點了也沒反應）
+if (userMessage.startsWith('選擇桌號|')) {
+  if (!isAdmin(userId)) return; // 非管理員按按鈕：完全不回覆
 
-      const groupKey = event.source.type === 'group' ? event.source.groupId : event.source.roomId;
-      groupCurrentTable.set(groupKey, fullTableName);
-      groupAdminBinder.set(groupKey, userId);
+  const parts = userMessage.split('|');
+  const gameName = parts[1];
+  const hallName = parts[2];
+  const tableNumber = parts[3];
+  const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
 
-      await safeReply(event, { type: 'text', text: `管理員已選擇桌別：${gameName}/${extractSimpleTableName(tableNumber)}，預測設定中…` });
+  const groupKey = event.source.type === 'group' ? event.source.groupId : event.source.roomId;
+  groupCurrentTable.set(groupKey, fullTableName);
+  groupAdminBinder.set(groupKey, userId);
 
-      const adminPanel = generateAdminControlFlex(fullTableName, groupKey);
-      await withRetry(() => client.pushMessage(userId, [{ type: 'flex', altText: '管理員面板', contents: adminPanel }])).catch(() => {});
-      return;
-    }
+  const adminPanel = generateAdminControlFlex(fullTableName, groupKey);
+
+  // 直接回到群組，所有人都能看到卡片，但只有管理員點了才會有反應（其他人點了無回覆）
+  return safeReply(event, { type: 'flex', altText: '管理員面板', contents: adminPanel });
+}
 
     // 管理員設定預測（可在群內或私訊送出）：設定預測|SIDE|FULL|GROUPID
     if (userMessage.startsWith('設定預測|')) {
