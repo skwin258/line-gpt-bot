@@ -4,7 +4,9 @@ import express from 'express';
 import { Client, middleware } from '@line/bot-sdk';
 import OpenAI from 'openai';
 
-// ====== 基本設定 ======
+/* =========================
+ * 基本設定
+ * ========================= */
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
@@ -13,20 +15,23 @@ const app = express();
 const client = new Client(config);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ---- 伺服器層優化：降低 499（client closed request）機率 ----
+/* =========================
+ * 伺服器層優化：降低 499 機率
+ * ========================= */
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
-// Node 原生 HTTP server keep-alive（在最下方 listen 後設定）
-let serverRef = null;
+let serverRef = null; // Node 原生 HTTP server keep-alive（在最下方 listen 後設定）
 
-// ====== 允許使用者 ======
+/* =========================
+ * 使用者與管理員
+ * ========================= */
 const allowedUsers = new Set([
   'U48c33cd9a93a3c6ce8e15647b8c17f08',
   'Ufaeaa194b93281c0380cfbfd59d5aee0',
   'U73759fc9139edfaf7c804509d0a8c07f',
   'U63918f9d8b44770747034598a351595e',
-  'U1cebd63109f62550c10df0ab835a900c',
+  'U1cebd63109f62550c10df0ab835a900c', // << 也是管理員
   'U0ea07940728c64ae26385f366b5b9603',
   'U35cf199d3a707137efed545d782e11c0',
   'Udbc76d0c8fab9a80a1c6a7ef12ac5e81',
@@ -37,29 +42,58 @@ const allowedUsers = new Set([
   'U65d7a660c1f5c2a4e8c975b2835a11d7',
 ]);
 
-// ====== 狀態暫存（記憶體版） ======
-const userLastActiveTime = new Map();
-const resultPressCooldown = new Map();
-const userRecentInput = new Map();
-const qaModeUntil = new Map();
-const handledEventIds = new Map();
+// 群組管理員（可多人）
+const GROUP_ADMIN_UIDS = new Set([
+  'U1cebd63109f62550c10df0ab835a900c',
+]);
 
-// === 報表所需暫存 ===
-const userCurrentTable = new Map();
-const userLastRecommend = new Map();
-const userBetLogs = new Map();
+/* =========================
+ * 狀態暫存（記憶體版）
+ * ========================= */
+// 私聊（自動版）
+const userLastActiveTime = new Map();   // userId -> ts
+const resultPressCooldown = new Map();  // userId -> ts
+const userRecentInput = new Map();      // userId -> { seq, ts }
+const qaModeUntil = new Map();          // userId -> ts
+const handledEventIds = new Map();      // 去重
 
-// ====== 節流/頻率限制 ======
-const userLastMsgAt = new Map();
-const USER_MIN_INTERVAL_MS = 250;
+// 報表（私聊）
+const userCurrentTable = new Map();   // userId -> fullTableName
+const userLastRecommend = new Map();  // userId -> {...}
+const userBetLogs = new Map();        // userId -> [ ... ]
 
-// TTL 設定
-const INACTIVE_MS = 2 * 60 * 1000;
-const RESULT_COOLDOWN_MS = 10 * 1000;
-const QA_WINDOW_MS = 3 * 60 * 1000;
-const EVENT_DEDUPE_MS = 5 * 60 * 1000;
+// 群組（手動版）—不影響私聊自動版
+const groupCurrentTable = new Map();   // groupId/roomId -> fullTableName
+const groupLastRecommend = new Map();  // groupId/roomId -> {...}
+const groupBetLogs = new Map();        // groupId/roomId -> [ ... ]
+const groupAdminBinder = new Map();    // groupId/roomId -> adminUserId（最後操作的管理員）
 
-// 小工具：事件去重
+// 基礎頻率限制
+const userLastMsgAt = new Map(); // userId or composite -> ts
+const USER_MIN_INTERVAL_MS = 250; // 0.25s
+
+// TTL
+const INACTIVE_MS = 2 * 60 * 1000;      // 2 分鐘未操作 => 視為中斷（僅私聊）
+const RESULT_COOLDOWN_MS = 10 * 1000;   // 單局按鈕冷卻（僅私聊）
+const QA_WINDOW_MS = 3 * 60 * 1000;     // 問答模式持續
+const EVENT_DEDUPE_MS = 5 * 60 * 1000;  // 事件去重 TTL
+
+/* =========================
+ * 小工具
+ * ========================= */
+function isGroupLike(event) {
+  return event?.source?.type === 'group' || event?.source?.type === 'room';
+}
+function getChatId(event) {
+  if (event?.source?.type === 'group') return event?.source?.groupId;
+  if (event?.source?.type === 'room') return event?.source?.roomId;
+  return event?.source?.userId;
+}
+function isAdmin(userId) {
+  return GROUP_ADMIN_UIDS.has(userId);
+}
+
+// 事件去重
 function dedupeEvent(event) {
   const id = event?.deliveryContext?.isRedelivery
     ? `${event?.message?.id || event?.replyToken}-R`
@@ -74,7 +108,7 @@ function dedupeEvent(event) {
   return false;
 }
 
-// ---- LINE API 呼叫重試器 ----
+// LINE API 呼叫重試器
 async function withRetry(fn, { tries = 3, baseDelay = 150 } = {}) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
@@ -91,7 +125,7 @@ async function withRetry(fn, { tries = 3, baseDelay = 150 } = {}) {
   throw lastErr;
 }
 
-// 小工具：安全回覆
+// 安全回覆（reply 失敗改 push 到同一聊天室）
 async function safeReply(event, messages) {
   if (!Array.isArray(messages)) messages = [messages];
   const replyToken = event.replyToken;
@@ -113,13 +147,18 @@ async function safeReply(event, messages) {
   }
 
   if (!replied) {
-    const userId = event?.source?.userId;
-    if (!userId) return;
-    await withRetry(() => client.pushMessage(userId, messages)).catch(() => {});
+    const source = event?.source || {};
+    let toId = null;
+    if (source.type === 'group') toId = source.groupId;
+    else if (source.type === 'room') toId = source.roomId;
+    else toId = source.userId;
+
+    if (!toId) return;
+    await withRetry(() => client.pushMessage(toId, messages)).catch(() => {});
   }
 }
 
-// 小工具：OpenAI 呼叫加超時
+// OpenAI 呼叫加超時（目前手動/自動都不強依賴）
 async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutMs = 6000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -129,15 +168,16 @@ async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutM
       { signal: controller.signal }
     );
     return resp?.choices?.[0]?.message?.content || '（AI 暫時沒有回覆）';
-  } catch (err) {
+  } catch {
     return '（AI 回應異常，請稍後再試）';
   } finally {
     clearTimeout(timer);
   }
 }
 
-// ====== 遊戲資料 ======
-// ====== 遊戲資料 ======
+/* =========================
+ * 遊戲資料（完整）
+ * ========================= */
 const tableData = {
   DG真人: {
     旗艦廳: ['百家樂D01','百家樂D02','百家樂D03','百家樂D04','百家樂D05','百家樂D06','百家樂D07','百家樂D08'],
@@ -163,7 +203,9 @@ const tableData = {
   },
 };
 
-// ====== Flex 產生器 ======
+/* =========================
+ * Flex 產生器（通用）
+ * ========================= */
 function generateHallSelectFlex(gameName) {
   const halls = Object.keys(tableData[gameName] || {});
   return {
@@ -192,7 +234,7 @@ function generateHallSelectFlex(gameName) {
   };
 }
 
-// ✅ 修正 generateTableListFlex
+// 牌桌清單（含下一頁保護）
 function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 10) {
   const startIndex = (page - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, tables.length);
@@ -215,7 +257,6 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
 
   const carousel = { type: 'carousel', contents: bubbles };
 
-  // 🚨 只在還有剩餘桌子時加入下一頁
   if (endIndex < tables.length) {
     carousel.contents.push({
       type: 'bubble',
@@ -229,7 +270,6 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
       },
     });
   }
-
   return carousel;
 }
 
@@ -257,8 +297,10 @@ function randHundreds(min, max) {
 }
 function pickOne(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
-// === 新增：把推薦結果寫入暫存，供報表使用 ===
-function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
+/* =========================
+ * 自動版：分析結果 Flex（含回報按鈕）
+ * ========================= */
+function generateAnalysisResultFlex(userIdOrKey, fullTableName, predicted = null) {
   const parts = String(fullTableName).split('|');
   const gameName = parts[0] || fullTableName;
   const hallName = parts[1] || '';
@@ -283,9 +325,8 @@ function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
   else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
   else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
 
-  // 紀錄使用者目前桌別 & 推薦
-  userCurrentTable.set(userId, fullTableName);
-  userLastRecommend.set(userId, {
+  // 記錄（自動/群組皆可重用此方法）
+  const rec = {
     fullTableName,
     system: gameName,
     hall: hallName,
@@ -293,7 +334,16 @@ function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
     side: mainPick,
     amount: betAmount,
     ts: Date.now(),
-  });
+  };
+
+  // 決定存放到 user or group（此函式傳入的是 userId 或 groupId/roomId）
+  if (String(userIdOrKey).startsWith('group:') || String(userIdOrKey).startsWith('room:')) {
+    groupCurrentTable.set(userIdOrKey.replace(/^group:|^room:/, ''), fullTableName);
+    groupLastRecommend.set(userIdOrKey.replace(/^group:|^room:/, ''), rec);
+  } else {
+    userCurrentTable.set(userIdOrKey, fullTableName);
+    userLastRecommend.set(userIdOrKey, rec);
+  }
 
   const proReasonsGeneric = [
     `近期節奏偏${mainPick}，點數優勢與回補力度明顯，勝率估約${passRate}% ，資金可採階梯式進場。`,
@@ -310,10 +360,47 @@ function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
   ];
   const mainReason = pickOne(proReasonsGeneric);
   const tieAddOn = attachTieSmall ? pickOne(tieReasons) : '';
-  const resultLine = `預測結果為：${mainPick}（${betLevel}）${attachTieSmall ? ' 和小下' : ''}`;
 
   const leftBtnLabel  = isDragonTiger ? '龍' : '閒';
   const rightBtnLabel = isDragonTiger ? '虎' : '莊';
+
+  const baseContents = [
+    { type: 'text', text: '分析結果', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+    { type: 'text', text: `牌桌：${gameName}`, margin: 'md', color: '#555555' },
+    { type: 'text', text: `預測結果為：${mainPick}（${betLevel}）${attachTieSmall ? ' 和小下' : ''}`, margin: 'md', size: 'md' },
+    { type: 'text', text: `推薦下注金額：${betAmount} 元`, margin: 'md', size: 'md' },
+    { type: 'text', text: `過關機率：約 ${passRate}%`, margin: 'md', size: 'md' },
+    { type: 'text', text: `說明：${mainReason}`, margin: 'md', wrap: true },
+  ];
+  if (attachTieSmall) baseContents.push({ type: 'text', text: `和小下理由：${tieAddOn}`, margin: 'md', wrap: true });
+
+  // 自動版需要回報按鈕
+  baseContents.push({
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    margin: 'md',
+    contents: [
+      { type: 'button', style: 'primary', color: '#2185D0', action: { type: 'message', label: leftBtnLabel, text: `當局結果為|${leftBtnLabel}|${fullTableName}` }, flex: 1 },
+      { type: 'button', style: 'primary', color: '#21BA45', action: { type: 'message', label: '和', text: `當局結果為|和|${fullTableName}` }, flex: 1 },
+      { type: 'button', style: 'primary', color: '#DB2828', action: { type: 'message', label: rightBtnLabel, text: `當局結果為|${rightBtnLabel}|${fullTableName}` }, flex: 1 },
+    ],
+  });
+
+  return {
+    type: 'bubble',
+    body: { type: 'box', layout: 'vertical', contents: baseContents },
+  };
+}
+
+/* =========================
+ * 手動版：管理員控制卡 & 公開結果卡
+ * ========================= */
+function generateAdminControlFlex(fullTableName, groupId) {
+  const [, hallName] = String(fullTableName).split('|');
+  const isDragonTiger = hallName === '龍虎鬥';
+  const left = isDragonTiger ? '龍' : '閒';
+  const right = isDragonTiger ? '虎' : '莊';
 
   return {
     type: 'bubble',
@@ -321,30 +408,74 @@ function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
       type: 'box',
       layout: 'vertical',
       contents: [
-        { type: 'text', text: '分析結果', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
-        { type: 'text', text: `牌桌：${gameName}`, margin: 'md', color: '#555555' },
-        { type: 'text', text: resultLine, margin: 'md', size: 'md' },
-        { type: 'text', text: `推薦下注金額：${betAmount} 元`, margin: 'md', size: 'md' },
-        { type: 'text', text: `過關機率：約 ${passRate}%`, margin: 'md', size: 'md' },
-        { type: 'text', text: `說明：${mainReason}`, margin: 'md', wrap: true },
-        ...(attachTieSmall ? [{ type: 'text', text: `和小下理由：${tieAddOn}`, margin: 'md', wrap: true }] : []),
+        { type: 'text', text: '管理員面板', weight: 'bold', size: 'lg', color: '#DB2828', align: 'center' },
+        { type: 'text', text: `桌號：${fullTableName}`, margin: 'md' },
+        { type: 'text', text: '請選擇本局預測：', margin: 'md' },
         {
           type: 'box',
           layout: 'horizontal',
           spacing: 'md',
-          margin: 'md',
           contents: [
-            { type: 'button', style: 'primary', color: '#2185D0', action: { type: 'message', label: leftBtnLabel, text: `當局結果為|${leftBtnLabel}|${fullTableName}` }, flex: 1 },
-            { type: 'button', style: 'primary', color: '#21BA45', action: { type: 'message', label: '和', text: `當局結果為|和|${fullTableName}` }, flex: 1 },
-            { type: 'button', style: 'primary', color: '#DB2828', action: { type: 'message', label: rightBtnLabel, text: `當局結果為|${rightBtnLabel}|${fullTableName}` }, flex: 1 },
+            { type: 'button', style: 'primary', color: '#2185D0', action: { type: 'message', label: left,  text: `設定預測|${left}|${fullTableName}|${groupId}` }, flex: 1 },
+            { type: 'button', style: 'primary', color: '#21BA45', action: { type: 'message', label: '和', text: `設定預測|和|${fullTableName}|${groupId}` }, flex: 1 },
+            { type: 'button', style: 'primary', color: '#DB2828', action: { type: 'message', label: right, text: `設定預測|${right}|${fullTableName}|${groupId}` }, flex: 1 },
           ],
         },
+        { type: 'text', text: '（僅供管理員使用，將以此預測發佈到群組）', margin: 'md', size: 'sm', color: '#777777' },
       ],
     },
   };
 }
 
-// ====== Flex 模組（注意事項 / 遊戲入口） ======
+function extractSimpleTableName(table) {
+  const m = /([A-Z]\d{2,3})$/i.exec(table || '');
+  return m ? m[1].toUpperCase() : table || '';
+}
+
+// 群組公開展示卡（無按鈕，符合你的格式）
+function generatePublicResultFlex({ system, hall, table, side, passRate, betAmount, betLevel, reason }) {
+  const tableShort = extractSimpleTableName(table);
+  return {
+    type: 'bubble',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        { type: 'text', text: 'SKwin百家分析系統', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+        { type: 'text', text: 'Ai分析結果', weight: 'bold', align: 'center', margin: 'sm' },
+        { type: 'separator', margin: 'md' },
+        { type: 'text', text: `本局預測：${side}（${betLevel}）`, margin: 'md' },
+        { type: 'text', text: `牌桌：${system}/${tableShort}`, margin: 'sm' },
+        { type: 'text', text: `勝率：${passRate}%`, margin: 'sm' },
+        { type: 'text', text: `建議下注：${betAmount}元`, margin: 'sm' },
+        { type: 'text', text: `說明：${reason}`, margin: 'sm', wrap: true },
+      ],
+    },
+  };
+}
+
+// 依 side 產出建議（共用邏輯）
+function computeRecommendation(side) {
+  const passRate = Math.floor(Math.random() * (90 - 45 + 1)) + 45;
+  let betLevel = '觀望';
+  let betAmount = 100;
+  if (passRate <= 50) { betLevel = '觀望'; betAmount = 100; }
+  else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(100, 1000); }
+  else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
+  else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
+
+  const reasons = [
+    `形態未出現反轉訊號，${side}動能續航；配合分散下注原則，${betLevel}較佳。`,
+    `近期節奏偏${side}，勝率估約${passRate}%；以風險報酬比衡量，採${betLevel}。`,
+    `波動收斂、慣性未破壞，${side}佔優，建議${betLevel}執行。`,
+    `短期趨勢朝${side}傾斜；紀律交易優先，${betLevel}配置。`,
+  ];
+  return { passRate, betLevel, betAmount, reason: pickOne(reasons) };
+}
+
+/* =========================
+ * Flex 模組（注意事項 / 遊戲入口）
+ * ========================= */
 const flexMessageIntroJson = {
   type: 'bubble',
   body: {
@@ -361,13 +492,13 @@ const flexMessageIntroJson = {
         contents: [
           { type: 'text', text: '1. 每次啟動系統後，請先觀察3~5局預測結果，再開始下注。', wrap: true },
           { type: 'separator', margin: 'sm' },
-          { type: 'text', text: '2. 若在同一桌連續輸掉3局，建議立即換桌，讓系統繼續分析牌局數據。', wrap: true },
+          { type: 'text', text: '2. 若在同一桌連續輸掉3局，建議立即換桌。', wrap: true },
           { type: 'separator', margin: 'sm' },
-          { type: 'text', text: '3. 根據當局開出的結果進行點選，請勿選擇錯誤，不然會造成系統判斷錯誤。', wrap: true },
+          { type: 'text', text: '3. 請正確回報當局開獎結果，以免影響分析。', wrap: true },
           { type: 'separator', margin: 'sm' },
-          { type: 'text', text: '4. 只要兩分鐘內未繼續使用即會中斷。', wrap: true },
+          { type: 'text', text: '4. 兩分鐘未操作將自動中斷（私聊）。', wrap: true },
           { type: 'separator', margin: 'sm' },
-          { type: 'text', text: '5. AI預測為輔助工具，請保持理性投注，量力而為，見好就收。', wrap: true },
+          { type: 'text', text: '5. 本系統為輔助工具，請理性投注。', wrap: true },
         ],
       },
       { type: 'button', action: { type: 'message', label: '開始預測', text: '開始預測' }, style: 'primary', color: '#00B900', margin: 'xl' },
@@ -400,14 +531,15 @@ const flexMessageGameSelectJson = {
   },
 };
 
-// ====== 公開關鍵字（圖文選單用） ======
+/* =========================
+ * 公開關鍵字（圖文選單用）
+ * ========================= */
 const CONTACT_REPLY_TEXT = `💥加入會員立刻領取5000折抵金💥
 有任何疑問，客服隨時為您服務。
 https://lin.ee/6kcsWNF`;
 
 const MONTHLY_PROMO_IMAGES = [
   'https://i.ibb.co/8nS3tYvZ/photo-2025-08-10-01-34-12.jpg',
-  // 可再加最多 4 張
 ];
 
 function buildMonthlyPromoMessages() {
@@ -459,11 +591,9 @@ function tryPublicKeyword(msg) {
   return null;
 }
 
-function extractSimpleTableName(table) {
-  const m = /([A-Z]\d{2,3})$/i.exec(table || '');
-  return m ? m[1].toUpperCase() : table || '';
-}
-
+/* =========================
+ * 報表工具
+ * ========================= */
 function buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns) {
   const money = sumColumns * 100;
   return {
@@ -510,9 +640,7 @@ function buildDailyReportFlex(systems, tables, totalAmount, sumColumns) {
   };
 }
 
-function columnsFromAmount(amount) {
-  return Math.round(Number(amount || 0) / 100);
-}
+function columnsFromAmount(amount) { return Math.round(Number(amount || 0) / 100); }
 
 function getTodayRangeTimestamp() {
   // 以 Asia/Taipei 時區換算今日 12:00–23:59:59.999
@@ -520,28 +648,28 @@ function getTodayRangeTimestamp() {
   const now = new Date();
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   const [y, m, d] = fmt.split('-').map(n => parseInt(n, 10));
-  const start = new Date(Date.UTC(y, m - 1, d, 4, 0, 0, 0));        // 台北 12:00 -> UTC+8 = 04:00 UTC
-  const end   = new Date(Date.UTC(y, m - 1, d, 15, 59, 59, 999));  // 台北 23:59:59.999 -> 15:59:59.999 UTC
+  const start = new Date(Date.UTC(y, m - 1, d, 4, 0, 0, 0));       // 台北 12:00 -> UTC+8 = 04:00 UTC
+  const end   = new Date(Date.UTC(y, m - 1, d, 15, 59, 59, 999)); // 台北 23:59:59.999 -> 15:59:59.999 UTC
   return { startMs: +start, endMs: +end };
 }
 
-// ====== 路由 ======
+/* =========================
+ * 路由
+ * ========================= */
 app.post('/webhook', middleware(config), async (req, res) => {
-  // 立刻回 200，避免 LINE 等待
-  res.status(200).end();
+  res.status(200).end(); // 立刻回 200，避免 LINE 等待
 
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   for (const event of events) {
     if (dedupeEvent(event)) continue;
 
     // 基礎頻率限制：0.25s 內重複訊息直接忽略（避免連點）
-    const uid = event?.source?.userId || 'unknown';
+    const throttleKey = `${getChatId(event)}:${event?.source?.userId || 'u'}`;
     const now = Date.now();
-    const last = userLastMsgAt.get(uid) || 0;
+    const last = userLastMsgAt.get(throttleKey) || 0;
     if (now - last < USER_MIN_INTERVAL_MS) continue;
-    userLastMsgAt.set(uid, now);
+    userLastMsgAt.set(throttleKey, now);
 
-    // 背景處理，不阻塞 webhook 回應
     handleEvent(event).catch((err) => {
       console.error('事件處理錯誤:', err?.message || err);
     });
@@ -551,23 +679,26 @@ app.post('/webhook', middleware(config), async (req, res) => {
 app.get('/', (_req, res) => res.send('OK'));
 const PORT = process.env.PORT || 3000;
 serverRef = app.listen(PORT, () => console.log(`Server running on ${PORT}`));
-// 調整 keep-alive，降低中間層 499
 serverRef.keepAliveTimeout = 65000;
 serverRef.headersTimeout = 66000;
 
-// ====== 主事件處理 ======
+/* =========================
+ * 事件處理
+ * ========================= */
 async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') return;
 
   const now = Date.now();
   const userId = event.source?.userId;
+  const chatId = getChatId(event);
   const userMessage = String(event.message.text || '').trim();
+  const inGroup = isGroupLike(event);
 
-  // 公開關鍵字
+  // 公開關鍵字（不含權限 & 模式）
   const pub = tryPublicKeyword(userMessage);
   if (pub) return safeReply(event, pub);
 
-  // 權限檢查
+  // 權限檢查（仍沿用 allowedUsers）
   if (!allowedUsers.has(userId)) {
     return safeReply(event, {
       type: 'text',
@@ -575,7 +706,182 @@ async function handleEvent(event) {
     });
   }
 
-  // 活躍檢查
+  /* --------------------
+   * 手動版（群組/社群）
+   * -------------------- */
+  if (inGroup) {
+    // 群組：開始預測
+    if (userMessage === '開始預測') {
+      if (!isAdmin(userId)) {
+        return safeReply(event, { type: 'text', text: '此群組為手動版，僅管理員可操作。請等待管理員開始分析。' });
+      }
+      return safeReply(event, { type: 'flex', altText: '請選擇遊戲（群組手動版）', contents: flexMessageGameSelectJson });
+    }
+
+    // 遊戲 -> 遊戲廳
+    if (['DG真人', '歐博真人', '沙龍真人', 'WM真人'].includes(userMessage)) {
+      if (!isAdmin(userId)) return; // 非管理員忽略
+      const hallFlex = generateHallSelectFlex(userMessage);
+      return safeReply(event, { type: 'flex', altText: `${userMessage} 遊戲廳選擇`, contents: hallFlex });
+    }
+
+    // 遊戲|遊戲廳 -> 牌桌清單
+    if (userMessage.includes('|')) {
+      const parts = userMessage.split('|');
+      if (parts.length === 2) {
+        if (!isAdmin(userId)) return;
+        const [gameName, hallName] = parts;
+        if (tableData[gameName] && tableData[gameName][hallName]) {
+          const tables = tableData[gameName][hallName];
+          const flexTables = generateTableListFlex(gameName, hallName, tables, 1);
+          if (flexTables.contents?.length > 1) {
+            const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
+            const btn = nextPageBubble?.body?.contents?.find?.(c => c.type === 'button');
+            if (btn) btn.action.text = `nextPage|2|${gameName}|${hallName}`;
+          }
+          return safeReply(event, { type: 'flex', altText: `${gameName} ${hallName} 牌桌列表 頁1`, contents: flexTables });
+        }
+      }
+    }
+
+    // 分頁
+    if (userMessage.startsWith('nextPage|')) {
+      if (!isAdmin(userId)) return;
+      const parts = userMessage.split('|');
+      if (parts.length === 4) {
+        const page = parseInt(parts[1], 10);
+        const gameName = parts[2];
+        const hallName = parts[3];
+        if (tableData[gameName] && tableData[gameName][hallName]) {
+          const tables = tableData[gameName][hallName];
+          const flexTables = generateTableListFlex(gameName, hallName, tables, page);
+          if (flexTables.contents?.length > 1) {
+            const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
+            const btn = nextPageBubble?.body?.contents?.find?.(c => c.type === 'button');
+            if (btn) btn.action.text = `nextPage|${page + 1}|${gameName}|${hallName}`;
+          }
+          return safeReply(event, { type: 'flex', altText: `${gameName} ${hallName} 牌桌列表 頁${page}`, contents: flexTables });
+        }
+      }
+    }
+
+    // 選擇桌號 -> 直接發管理員面板（DM）+ 群組提示
+    if (userMessage.startsWith('選擇桌號|')) {
+      if (!isAdmin(userId)) {
+        return safeReply(event, { type: 'text', text: '只有管理員可以選擇桌號。' });
+      }
+      const parts = userMessage.split('|');
+      const gameName = parts[1];
+      const hallName = parts[2];
+      const tableNumber = parts[3];
+      const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
+
+      const groupKey = event.source.type === 'group' ? event.source.groupId : event.source.roomId;
+      groupCurrentTable.set(groupKey, fullTableName);
+      groupAdminBinder.set(groupKey, userId);
+
+      // 提醒群組
+      await safeReply(event, { type: 'text', text: `管理員已選擇桌別：${gameName}/${extractSimpleTableName(tableNumber)}，預測設定中…` });
+
+      // DM 管理員面板
+      const adminPanel = generateAdminControlFlex(fullTableName, groupKey);
+      await withRetry(() => client.pushMessage(userId, [{ type: 'flex', altText: '管理員面板', contents: adminPanel }])).catch(() => {});
+      return;
+    }
+
+    // 管理員在 DM 或 群組發出：設定預測|SIDE|FULL|GROUPID
+    if (userMessage.startsWith('設定預測|')) {
+      if (!isAdmin(userId)) return;
+      const parts = userMessage.split('|');
+      // 允許在群內（帶 groupId），也允許在私聊（必須帶 groupId）
+      if (parts.length < 4) {
+        return safeReply(event, { type: 'text', text: '格式錯誤。請使用：設定預測|莊(或閒/和/龍/虎)|系統|廳|桌|GROUPID' });
+      }
+      const side = parts[1];
+      const fullTableName = parts.slice(2, parts.length - 1).join('|'); // 可能包含多個 |
+      const targetGroupId = parts[parts.length - 1];
+
+      const [system, hall, table] = fullTableName.split('|');
+      // 產出建議
+      const { passRate, betLevel, betAmount, reason } = computeRecommendation(side);
+
+      // 記錄群組推薦
+      groupLastRecommend.set(targetGroupId, {
+        fullTableName,
+        system, hall, table,
+        side,
+        amount: betAmount,
+        ts: Date.now(),
+      });
+
+      // 發佈到群組（公開卡）
+      const publicFlex = generatePublicResultFlex({ system, hall, table, side, passRate, betAmount, betLevel, reason });
+      await withRetry(() => client.pushMessage(targetGroupId, [{ type: 'flex', altText: 'Ai分析結果', contents: publicFlex }])).catch(() => {});
+
+      // 回覆管理員（私訊）—提供回報按鈕
+      const isDragonTiger = hall === '龍虎鬥';
+      const left = isDragonTiger ? '龍' : '閒';
+      const right = isDragonTiger ? '虎' : '莊';
+      const adminFollow = {
+        type: 'bubble',
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          contents: [
+            { type: 'text', text: '已發佈到群組 ✅', weight: 'bold', align: 'center', color: '#00B900' },
+            { type: 'text', text: `桌號：${fullTableName}`, margin: 'md' },
+            { type: 'text', text: '請於開獎後回報當局結果：', margin: 'md' },
+            {
+              type: 'box',
+              layout: 'horizontal',
+              spacing: 'md',
+              contents: [
+                { type: 'button', style: 'primary', color: '#2185D0', action: { type: 'message', label: left,  text: `當局結果為|${left}|${fullTableName}|${targetGroupId}` }, flex: 1 },
+                { type: 'button', style: 'primary', color: '#21BA45', action: { type: 'message', label: '和', text: `當局結果為|和|${fullTableName}|${targetGroupId}` }, flex: 1 },
+                { type: 'button', style: 'primary', color: '#DB2828', action: { type: 'message', label: right, text: `當局結果為|${right}|${fullTableName}|${targetGroupId}` }, flex: 1 },
+              ],
+            },
+          ],
+        },
+      };
+      await withRetry(() => client.pushMessage(userId, [{ type: 'flex', altText: '回報當局結果', contents: adminFollow }])).catch(() => {});
+      return;
+    }
+
+    // 群組報表（使用群組紀錄）
+    if (userMessage === '當局報表') {
+      const gId = event.source.type === 'group' ? event.source.groupId : event.source.roomId;
+      const full = groupCurrentTable.get(gId);
+      if (!full) return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請管理員先選擇桌號。' });
+      const [system, hall, table] = full.split('|');
+      const logs = (groupBetLogs.get(gId) || []).filter(x => x.fullTableName === full);
+      const totalAmount = logs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+      const sumColumns = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+      return safeReply(event, buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns));
+    }
+    if (userMessage === '本日報表') {
+      const gId = event.source.type === 'group' ? event.source.groupId : event.source.roomId;
+      const logs = groupBetLogs.get(gId) || [];
+      const { startMs, endMs } = getTodayRangeTimestamp();
+      const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
+      if (todayLogs.length === 0) {
+        return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
+      }
+      const systems = [...new Set(todayLogs.map(x => x.system))];
+      const tables  = [...new Set(todayLogs.map(x => x.table))];
+      const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+      const sumColumns = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+      return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
+    }
+
+    // 群組：其餘字串忽略（避免自動版的字元檢查誤觸）
+    return;
+  }
+
+  /* --------------------
+   * 自動版（私聊：原功能完整保留）
+   * -------------------- */
+  // 活躍檢查（僅私聊）
   const lastActive = userLastActiveTime.get(userId) || 0;
   const firstTime = lastActive === 0;
   if (!firstTime && now - lastActive > INACTIVE_MS) {
@@ -596,7 +902,7 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: '請選擇遊戲', contents: flexMessageGameSelectJson });
   }
 
-  // === 報表關鍵字（放在前面避免被字元檢查攔截） ===
+  // 報表（私聊）
   if (userMessage === '當局報表') {
     const full = userCurrentTable.get(userId);
     if (!full) return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
@@ -606,7 +912,6 @@ async function handleEvent(event) {
     const sumColumns = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
     return safeReply(event, buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns));
   }
-
   if (userMessage === '本日報表') {
     const logs = userBetLogs.get(userId) || [];
     const { startMs, endMs } = getTodayRangeTimestamp();
@@ -620,15 +925,14 @@ async function handleEvent(event) {
     const sumColumns = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
     return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
   }
-  // === 報表關鍵字處理到此 ===
 
-  // 遊戲 → 遊戲廳
+  // 遊戲 -> 遊戲廳
   if (['DG真人', '歐博真人', '沙龍真人', 'WM真人'].includes(userMessage)) {
     const hallFlex = generateHallSelectFlex(userMessage);
     return safeReply(event, { type: 'flex', altText: `${userMessage} 遊戲廳選擇`, contents: hallFlex });
   }
 
-  // 遊戲|遊戲廳 → 牌桌列表（含分頁）
+  // 遊戲|遊戲廳 -> 牌桌清單（含分頁）
   if (userMessage.includes('|')) {
     const parts = userMessage.split('|');
     if (parts.length === 2) {
@@ -666,7 +970,7 @@ async function handleEvent(event) {
     }
   }
 
-  // 選擇桌號 → 要求輸入前10局
+  // 選擇桌號 -> 要求輸入前10局
   if (userMessage.startsWith('選擇桌號|')) {
     const parts = userMessage.split('|');
     const gameName = parts[1];
@@ -677,7 +981,7 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前10局結果`, contents: generateInputInstructionFlex(fullTableName) });
   }
 
-  // === 非法字元防呆（排除報表關鍵字） ===
+  // 非法字元防呆（排除報表關鍵字）
   const isReportKeyword = (userMessage === '當局報表' || userMessage === '本日報表');
   if (
     !isReportKeyword &&
@@ -703,7 +1007,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 開始分析
+  // 開始分析（私聊）
   if (userMessage.startsWith('開始分析|')) {
     const fullTableName = userMessage.split('|')[1];
     const rec = userRecentInput.get(userId);
@@ -717,20 +1021,39 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果（含冷卻） → 記錄戰績
+  // 回報當局結果（私聊）
   if (userMessage.startsWith('當局結果為|')) {
-    const lastPress = resultPressCooldown.get(userId) || 0;
-    if (now - lastPress < RESULT_COOLDOWN_MS) {
-      return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
-    }
-    resultPressCooldown.set(userId, now);
-
     const parts = userMessage.split('|');
-    if (parts.length === 3) {
-      const actual = parts[1]; // 閒/莊/和
+    // 允許 3 段（私聊）或 4 段（群組管理員私訊回報）
+    if (parts.length === 3 || parts.length === 4) {
+      const actual = parts[1];
       const fullTableName = parts[2];
-      const last = userLastRecommend.get(userId);
+      const targetGroupId = parts[3]; // 可能是 undefined（私聊）
 
+      if (targetGroupId) {
+        // 管理員私訊回報群組
+        if (!isAdmin(userId)) return;
+        const last = groupLastRecommend.get(targetGroupId);
+        if (last && last.fullTableName === fullTableName) {
+          const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
+          const money = cols * 100;
+          const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
+          const arr = groupBetLogs.get(targetGroupId) || [];
+          arr.push(entry);
+          groupBetLogs.set(targetGroupId, arr);
+        }
+        // 推播群組下一張（選擇由管理員再發）—此處先不自動連續發：保持簡潔
+        return safeReply(event, { type: 'text', text: '已回報群組當局結果 ✅' });
+      }
+
+      // 私聊記錄
+      const lastPress = resultPressCooldown.get(userId) || 0;
+      if (Date.now() - lastPress < RESULT_COOLDOWN_MS) {
+        return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
+      }
+      resultPressCooldown.set(userId, Date.now());
+
+      const last = userLastRecommend.get(userId);
       if (last && last.fullTableName === fullTableName) {
         const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
         const money = cols * 100;
@@ -745,7 +1068,7 @@ async function handleEvent(event) {
     }
   }
 
-  // 問答模式開關
+  // 問答模式（沿用）
   if (userMessage.startsWith('AI問與答')) {
     qaModeUntil.set(userId, now + QA_WINDOW_MS);
     const q = userMessage.replace(/^AI問與答\s*/, '').trim();
@@ -753,19 +1076,19 @@ async function handleEvent(event) {
     const replyText = await callOpenAIWithTimeout([{ role: 'user', content: q }]);
     return safeReply(event, { type: 'text', text: replyText });
   }
-
-  // 問答模式內
   const qaUntil = qaModeUntil.get(userId) || 0;
   if (now < qaUntil) {
     const replyText = await callOpenAIWithTimeout([{ role: 'user', content: userMessage }]);
     return safeReply(event, { type: 'text', text: replyText });
   }
 
-  // 預設回覆
+  // 預設回覆（私聊）
   return safeReply(event, { type: 'text', text: '已關閉問答模式，需要開啟請輸入關鍵字。' });
 }
 
-// ====== 全域錯誤處理（避免程序當機） ======
+/* =========================
+ * 全域錯誤處理（避免程序當機）
+ * ========================= */
 process.on('unhandledRejection', (reason) => {
   console.error('UnhandledRejection:', reason);
 });
