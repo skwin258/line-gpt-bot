@@ -794,7 +794,30 @@ async function handleEvent(event) {
     }
   }
 
-  // 問答模式
+  // 問答模式（沿用）
   if (userMessage.startsWith('AI問與答')) {
     qaModeUntil.set(userId, now + QA_WINDOW_MS);
-    const q = userMessage.replace(/^AI問與答
+    const q = userMessage.replace(/^AI問與答\s*/, '').trim();
+    if (!q) return safeReply(event, { type: 'text', text: '請問您想詢問甚麼主題或是具體問題呢?' });
+    const replyText = await callOpenAIWithTimeout([{ role: 'user', content: q }]);
+    return safeReply(event, { type: 'text', text: replyText });
+  }
+  const qaUntil = qaModeUntil.get(userId) || 0;
+  if (now < qaUntil) {
+    const replyText = await callOpenAIWithTimeout([{ role: 'user', content: userMessage }]);
+    return safeReply(event, { type: 'text', text: replyText });
+  }
+
+  // 預設回覆（私聊）
+  return safeReply(event, { type: 'text', text: '已關閉問答模式，需要開啟請輸入關鍵字。' });
+}
+
+/* =========================
+ * 全域錯誤處理（避免程序當機）
+ * ========================= */
+process.on('unhandledRejection', (reason) => {
+  console.error('UnhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('UncaughtException:', err);
+});
