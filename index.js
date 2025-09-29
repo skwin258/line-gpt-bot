@@ -251,6 +251,8 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
   });
 
   const carousel = { type: 'carousel', contents: bubbles };
+
+  // ⚡ 修正：最後一頁不再產生「下一頁」按鈕，避免當機
   if (endIndex < tables.length) {
     carousel.contents.push({
       type: 'bubble',
@@ -264,6 +266,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
       },
     });
   }
+
   return carousel;
 }
 
