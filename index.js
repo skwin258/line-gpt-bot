@@ -41,6 +41,7 @@ const allowedUsers = new Set([
   'U2031c52d282931d135d54e21c5657184',
   'U3cdee5d82468e9f9c43ae83c5cc74b3b',
   'U894e1dbe11c2011df54d5b34fce66014',
+  'U6dcf6ed0c8677c2e63ff98e63069eb9a',
 ]);
 
 // 群組管理員（固定擁有權）
