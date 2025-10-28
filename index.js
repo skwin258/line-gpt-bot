@@ -582,16 +582,61 @@ if (userMessage === '開始預測') {
     return safeReply(event, buildReportIntroFlex());
   }
 
-  // 私聊報表
-  if (userMessage === '當局報表') {
-    const full = userCurrentTable.get(userId);
-    if (!full) return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
-    const [system, hall, table] = full.split('|');
-    const logs = (userBetLogs.get(userId) || []).filter(x => x.fullTableName === full);
-    const totalAmount = logs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-    const sumColumns = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-    return safeReply(event, buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns));
+  // 安全解析 fullTableName（不足三段也有預設值）
+function parseFullTableSafe(full) {
+  if (!full || typeof full !== 'string') {
+    return { system: '', hall: '', table: '' };
   }
+  const parts = full.split('|');
+  return {
+    system: parts[0] ?? '',
+    hall: parts[1] ?? '',
+    table: parts[2] ?? '',
+  };
+}
+
+if (userMessage === '當局報表') {
+  // 1) 嘗試用「最後一次推薦」為準（一定包含 system/hall/table）
+  const last = userLastRecommend.get(userId);
+
+  // 2) 再退回使用者目前的 fullTableName
+  const full = userCurrentTable.get(userId);
+
+  // 3) 安全取得 system/hall/table（先從 last 取，沒有再用 full 解析）
+  let system = '', hall = '', table = '';
+  if (last && last.system) {
+    system = String(last.system || '');
+    hall   = String(last.hall || '');
+    table  = String(last.table || '');
+  } else {
+    const parsed = parseFullTableSafe(full);
+    system = parsed.system;
+    hall   = parsed.hall;
+    table  = parsed.table;
+  }
+
+  // 4) 沒有任何可用資訊就提醒先選桌
+  if (!system && !hall && !table) {
+    return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
+  }
+
+  // 5) 匯總本桌的紀錄
+  //    若有 last.fullTableName 就優先用它；否則用 full
+  const targetFull = (last && last.fullTableName) ? last.fullTableName : full;
+  const logsAll = userBetLogs.get(userId) || [];
+  const logs = targetFull
+    ? logsAll.filter(x => x.fullTableName === targetFull)
+    : logsAll.filter(x => x.system === system && x.hall === hall && x.table === table);
+
+  const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)   || 0), 0);
+  const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns)  || 0), 0);
+
+  // 6) 輸出報表（一定會帶上 system/hall/table，不會再出現 undefined）
+  return safeReply(
+    event,
+    buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
+  );
+}
   if (userMessage === '本日報表') {
     const logs = userBetLogs.get(userId) || [];
     const { startMs, endMs } = getTodayRangeTimestamp();
