@@ -263,25 +263,35 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
   const pageTables = tables.slice(startIndex, endIndex);
 
   const bubbles = pageTables.map((table, idxOnPage) => {
-    const idxAll   = startIndex + idxOnPage;
-    const status   = statusList[idxAll];
-    const statusText = status ? status : ' ';
+    const idxAll = startIndex + idxOnPage;
+    const status = statusList[idxAll]; // 可能是 null
 
-    return {
-      type: 'bubble',
-      body: { type: 'box', layout: 'vertical', contents: [
-        { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
-        { type: 'text', text: statusText, size: 'sm', color: '#666666', margin: 'sm' },
-        { type: 'text', text: '最低下注：100元', size: 'sm', color: '#555555', margin: 'sm' },
-        { type: 'text', text: '最高限額：10000元', size: 'sm', color: '#555555', margin: 'sm' },
-        { type: 'button', action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` }, style: 'primary', color: '#00B900', margin: 'md' },
-      ]},
-    };
+    // 先放共同內容
+    const contents = [
+      { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
+    ];
+
+    // 有狀態才 push 這一行，沒有就不加，避免空白
+    if (status) {
+      contents.push({ type: 'text', text: status, size: 'sm', color: '#666666', margin: 'sm' });
+    }
+
+    // 其他固定行
+    contents.push(
+      { type: 'text', text: '最低下注：100元', size: 'sm', color: '#555555', margin: 'sm' },
+      { type: 'text', text: '最高限額：10000元', size: 'sm', color: '#555555', margin: 'sm' },
+      {
+        type: 'button',
+        action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` },
+        style: 'primary', color: '#00B900', margin: 'md'
+      }
+    );
+
+    return { type: 'bubble', body: { type: 'box', layout: 'vertical', contents } };
   });
 
   const carousel = { type: 'carousel', contents: bubbles };
 
-  // 只有還有下一頁時才加「下一頁」卡；≤10 桌不會出現分頁卡
   if (endIndex < tables.length) {
     carousel.contents.push({
       type: 'bubble',
@@ -291,6 +301,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
       ]},
     });
   }
+
   return carousel;
 }
 
