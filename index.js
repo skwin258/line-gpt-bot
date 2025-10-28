@@ -426,9 +426,10 @@ function buildReportIntroFlex() {
             margin: 'sm',
             spacing: 'xs',
             contents: [
-              { type: 'text', text: '說明：報表採柱碼制（100 元 = 1 柱）。', wrap: true },
-              { type: 'text', text: '1. 總下注金額：期間內所有投注合計。', wrap: true },
-              { type: 'text', text: '2. 柱碼：淨勝負柱數（正為盈、負為虧）。', wrap: true },
+              { type: 'text', text: '說明：報表採柱碼制。', wrap: true },
+              { type: 'text', text: '（100 元 = 1 柱）', wrap: true },
+              { type: 'text', text: '1. 總下注金額：所有投注合計。', wrap: true },
+              { type: 'text', text: '2. 柱碼：淨勝負柱數。', wrap: true },
               { type: 'text', text: '3. 輸贏金額：柱碼 × 100。', wrap: true },
             ],
           },
