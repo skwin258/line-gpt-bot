@@ -166,32 +166,26 @@ const tableData = {
 // 圖片卡的資料（可改順序）
 const SYSTEM_CARDS = [
   {
-    title: '沙龍百家',
     actionText: '沙龍真人',
     image: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg',
   },
   {
-    title: '歐博百家',
     actionText: '歐博真人',
     image: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg',
   },
   {
-    title: 'MT百家',
     actionText: 'MT真人',
     image: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg',
   },
   {
-    title: '金佰新百家',
     actionText: '金佰新百家',
     image: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg',
   },
   {
-    title: 'DG百家',
     actionText: 'DG真人',
     image: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg',
   },
   {
-    title: 'WM百家',
     actionText: 'WM真人',
     image: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg',
   },
