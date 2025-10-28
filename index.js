@@ -556,10 +556,15 @@ async function handleEvent(event) {
   if (userMessage === '會員開通' || userMessage === 'AI算牌說明') {
     return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
   }
-  if (userMessage === '開始預測') {
-    // 直接顯示：系統圖片小卡 Carousel
-    return safeReply(event, buildSystemSelectCarousel());
-  }
+if (userMessage === '開始預測') {
+  // 顯示「選擇系統」圖片小卡
+  const carousel = buildSystemCardsCarousel();
+  return safeReply(event, {
+    type: 'flex',
+    altText: '請選擇系統',
+    contents: carousel
+  });
+}
 
   // 報表入口（私聊）
   if (userMessage === '報表') {
