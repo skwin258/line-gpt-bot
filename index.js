@@ -164,10 +164,10 @@ const tableData = {
  * ========================= */
 const SYSTEM_CARD_LIST = [
   { title: 'DG百家',     sendText: 'DG真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg' },
+  { title: 'MT百家',     sendText: 'MT真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg' },
   { title: '歐博百家',   sendText: '歐博真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg' },
   { title: '沙龍百家',   sendText: '沙龍真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg' },
   { title: 'WM百家',     sendText: 'WM真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg' },
-  { title: 'MT百家',     sendText: 'MT真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg' },
   { title: '金佰新百家', sendText: '金佰新', img: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg' },
 ];
 
