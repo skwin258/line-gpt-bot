@@ -595,43 +595,75 @@ function parseFullTableSafe(full) {
   };
 }
 
+// 取得該使用者最後一筆下注紀錄（依 ts 最大）
+function getLastLogForUser(userId) {
+  const logs = userBetLogs.get(userId) || [];
+  if (logs.length === 0) return null;
+  let last = logs[0];
+  for (const x of logs) {
+    if ((x?.ts || 0) > (last?.ts || 0)) last = x;
+  }
+  return last;
+}
+
+// 安全解析 fullTableName → { system, hall, table }
+function parseFullTableSafe(full) {
+  if (!full || typeof full !== 'string') return { system: '', hall: '', table: '' };
+  const parts = full.split('|');
+  return {
+    system: parts[0] ?? '',
+    hall:   parts[1] ?? '',
+    table:  parts[2] ?? '',
+  };
+}
+
 if (userMessage === '當局報表') {
-  // 1) 嘗試用「最後一次推薦」為準（一定包含 system/hall/table）
-  const last = userLastRecommend.get(userId);
+  // A. 優先：最新一次推薦（一定含 system/hall/table）
+  const lastRec  = userLastRecommend.get(userId) || null;
 
-  // 2) 再退回使用者目前的 fullTableName
-  const full = userCurrentTable.get(userId);
+  // B. 次之：目前選桌（fullTableName）
+  const fullSel  = userCurrentTable.get(userId) || '';
 
-  // 3) 安全取得 system/hall/table（先從 last 取，沒有再用 full 解析）
+  // C. 保底：該使用者最後一筆（已回報過的）下注紀錄
+  const lastLog  = getLastLogForUser(userId);
+
+  // 先嘗試從 A 取，否則解析 B，再不行用 C
   let system = '', hall = '', table = '';
-  if (last && last.system) {
-    system = String(last.system || '');
-    hall   = String(last.hall || '');
-    table  = String(last.table || '');
-  } else {
-    const parsed = parseFullTableSafe(full);
+  if (lastRec && lastRec.system) {
+    system = String(lastRec.system || '');
+    hall   = String(lastRec.hall   || '');
+    table  = String(lastRec.table  || '');
+  } else if (fullSel) {
+    const parsed = parseFullTableSafe(fullSel);
     system = parsed.system;
     hall   = parsed.hall;
     table  = parsed.table;
+  } else if (lastLog) {
+    system = String(lastLog.system || '');
+    hall   = String(lastLog.hall   || '');
+    table  = String(lastLog.table  || '');
   }
 
-  // 4) 沒有任何可用資訊就提醒先選桌
+  // 沒任何線索 → 請先選桌
   if (!system && !hall && !table) {
     return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
   }
 
-  // 5) 匯總本桌的紀錄
-  //    若有 last.fullTableName 就優先用它；否則用 full
-  const targetFull = (last && last.fullTableName) ? last.fullTableName : full;
-  const logsAll = userBetLogs.get(userId) || [];
+  // 目標 fullTableName：A > B > C
+  const targetFull =
+    (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
+    (fullSel ? fullSel :
+    (lastLog && lastLog.fullTableName ? lastLog.fullTableName : ''));
+
+  // 匯總該桌紀錄
+  const allLogs = userBetLogs.get(userId) || [];
   const logs = targetFull
-    ? logsAll.filter(x => x.fullTableName === targetFull)
-    : logsAll.filter(x => x.system === system && x.hall === hall && x.table === table);
+    ? allLogs.filter(x => x.fullTableName === targetFull)
+    : allLogs.filter(x => x.system === system && x.hall === hall && x.table === table);
 
-  const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)   || 0), 0);
-  const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns)  || 0), 0);
+  const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
+  const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
 
-  // 6) 輸出報表（一定會帶上 system/hall/table，不會再出現 undefined）
   return safeReply(
     event,
     buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
