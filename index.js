@@ -775,45 +775,58 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果（私聊）→ 先顯示「當前珠盤路」卡，再出一張新的分析卡
-  if (userMessage.startsWith('當局結果為|')) {
-    const parts = userMessage.split('|');
-    // 私聊格式：當局結果為|SIDE|FULL
-    if (parts.length === 3) {
-      const nowTs = Date.now();
-      const lastPress = resultPressCooldown.get(userId) || 0;
-      if (nowTs - lastPress < RESULT_COOLDOWN_MS) {
-        return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
-      }
-      resultPressCooldown.set(userId, nowTs);
-
-      const actual = parts[1];
-      const fullTableName = parts[2];
-      const last = userLastRecommend.get(userId);
-
-      if (last && last.fullTableName === fullTableName) {
-        const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
-        const money = cols * 100;
-        const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
-        const arr = userBetLogs.get(userId) || [];
-        arr.push(entry);
-        userBetLogs.set(userId, arr);
-      }
-
-      // 先送珠盤
-      const rec = userRecentInput.get(userId);
-      if (rec?.seq) {
-        await safeReply(event, { type: 'flex', altText: '當前珠盤路', contents: beadplateFlex(rec.seq) });
-      }
-
-      // 再送新分析卡
-      const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
-      return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
+ // 回報當局結果（私聊）→ 先更新序列並顯示「當前珠盤路」卡，再出一張新的分析卡
+if (userMessage.startsWith('當局結果為|')) {
+  const parts = userMessage.split('|');
+  // 私聊格式：當局結果為|SIDE|FULL
+  if (parts.length === 3) {
+    const nowTs = Date.now();
+    const lastPress = resultPressCooldown.get(userId) || 0;
+    if (nowTs - lastPress < RESULT_COOLDOWN_MS) {
+      return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
     }
-  }
+    resultPressCooldown.set(userId, nowTs);
 
-  // 預設回覆
-  return safeReply(event, { type: 'text', text: '已關閉問答模式，需要開啟請輸入關鍵字。' });
+    const actual = parts[1];            // '莊' / '閒' / '和'（龍虎場：'龍' / '虎' / '和'）
+    const fullTableName = parts[2];
+    const last = userLastRecommend.get(userId);
+
+    // 1) 先記帳（柱碼/金額）
+    if (last && last.fullTableName === fullTableName) {
+      const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
+      const money = cols * 100;
+      const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
+      const arr = userBetLogs.get(userId) || [];
+      arr.push(entry);
+      userBetLogs.set(userId, arr);
+    }
+
+    // 2) 依玩家點選結果「更新珠盤序列」
+    const rec = userRecentInput.get(userId) || null;
+
+    // 把龍虎映射到珠盤（龍=閒/藍、虎=莊/紅；和維持和/綠）
+    const mapDT = { '龍':'閒', '虎':'莊' };
+    const toAppend = mapDT[actual] || actual; // 非龍虎即原字
+
+    let seqAfter = '';
+    if (rec?.seq) {
+      seqAfter = (rec.seq + toAppend);
+      // 只保留最近 20 手
+      if (seqAfter.length > 20) seqAfter = seqAfter.slice(-20);
+      userRecentInput.set(userId, { seq: seqAfter, ts: nowTs });
+    } else {
+      // 若此前沒有序列，直接從這手開始
+      seqAfter = toAppend;
+      userRecentInput.set(userId, { seq: seqAfter, ts: nowTs });
+    }
+
+    // 3) 先送「更新後」的珠盤卡
+    await safeReply(event, { type: 'flex', altText: '當前珠盤路', contents: beadplateFlex(seqAfter) });
+
+    // 4) 再送一張新的分析卡
+    const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
+    return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
+  }
 }
 
 /* =========================
