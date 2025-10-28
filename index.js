@@ -208,7 +208,6 @@ function buildSystemSelectCarousel() {
       layout: 'vertical',
       spacing: 'sm',
       contents: [
-        { type: 'text', text: c.title, weight: 'bold', size: 'md', align: 'center' },
         {
           type: 'button',
           style: 'primary',
@@ -219,7 +218,8 @@ function buildSystemSelectCarousel() {
     },
   }));
 
-  return { type: 'flex', altText: '請選擇系統', contents: { type: 'carousel', contents: bubbles } };
+  // 這裡只回傳 carousel「內容」，不要再包 flex
+  return { type: 'carousel', contents: bubbles };
 }
 
 function generateHallSelectFlex(gameName) {
@@ -557,12 +557,11 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
   }
 if (userMessage === '開始預測') {
-  // 顯示「選擇系統」圖片小卡
-  const carousel = buildSystemSelectCarousel();
+  // 直接送出完整 Flex 訊息（外層 flex 由這裡包）
   return safeReply(event, {
     type: 'flex',
     altText: '請選擇系統',
-    contents: carousel
+    contents: buildSystemSelectCarousel()
   });
 }
 
