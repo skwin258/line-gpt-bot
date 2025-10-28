@@ -601,61 +601,72 @@ async function handleEvent(event) {
     };
   }
 
- // 當局報表（私聊）
+// 當局報表（私聊）
 if (/^\s*當局報表\s*$/.test(userMessage)) {
-  // A. 最新一次推薦（一定含 system/hall/table）
-  const lastRec  = userLastRecommend.get(userId) || null;
-  // B. 目前選桌
-  const fullSel  = userCurrentTable.get(userId) || '';
-  // C. 最後一筆已回報紀錄
-  const logsAll  = userBetLogs.get(userId) || [];
-  let lastLog = null;
-  if (logsAll.length > 0) {
-    lastLog = logsAll.reduce((a, b) => ((a?.ts || 0) > (b?.ts || 0) ? a : b));
-  }
+  const logsAll = userBetLogs.get(userId) || [];
+  const lastRec = userLastRecommend.get(userId) || null;
+  const fullSel = userCurrentTable.get(userId) || null;
 
-  // 先決定要顯示的 system/hall/table（可能為空）
-  let system = '', hall = '', table = '';
-  if (lastRec && lastRec.system) {
-    system = String(lastRec.system || '');
-    hall   = String(lastRec.hall   || '');
-    table  = String(lastRec.table  || '');
-  } else if (fullSel) {
-    const parsed = (function parseFullTableSafe(full) {
-      if (!full || typeof full !== 'string') return { system: '', hall: '', table: '' };
-      const p = full.split('|'); return { system: p[0] ?? '', hall: p[1] ?? '', table: p[2] ?? '' };
-    })(fullSel);
-    system = parsed.system; hall = parsed.hall; table = parsed.table;
-  } else if (lastLog) {
-    system = String(lastLog.system || '');
-    hall   = String(lastLog.hall   || '');
-    table  = String(lastLog.table  || '');
-  }
-
-  // 目標 fullTableName：A > B > C
-  const targetFull =
+  // 1) 先決定 targetFull（A > B > C）
+  let targetFull =
     (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
     (fullSel ? fullSel :
-    (lastLog && lastLog.fullTableName ? lastLog.fullTableName : ''));
+    (logsAll.length ? (logsAll.reduce((a,b)=>((a?.ts||0)>(b?.ts||0)?a:b)).fullTableName || '') : ''));
 
-  // ⚠️關鍵補強：如果前面三個欄位還是空，但我們有 targetFull，就用 targetFull 來補齊，
-  // 這樣就不會再出現「未指定」了。
-  if (targetFull && (!system || !hall || !table)) {
-    const p = targetFull.split('|');
-    system = system || (p[0] ?? '');
-    hall   = hall   || (p[1] ?? '');
-    table  = table  || (p[2] ?? '');
+  // 2) 對 targetFull 做「智慧解析」
+  function smartParse(full) {
+    if (!full || typeof full !== 'string') return { system:'', hall:'', table:'' };
+
+    // 常規：以「系統|廳別|桌別」切
+    const p = full.split('|');
+    let system = p[0] ?? '';
+    let hall   = p[1] ?? '';
+    let table  = p[2] ?? '';
+
+    // 若仍缺欄位，嘗試用最後一段當桌號反查 tableData
+    const candidate = table || p[p.length - 1];
+    if (!hall || !system) {
+      outer:
+      for (const [sys, halls] of Object.entries(tableData)) {
+        for (const [hallName, list] of Object.entries(halls)) {
+          if (list.includes(candidate)) {
+            if (!system) system = sys;
+            if (!hall)   hall   = hallName;
+            if (!table)  table  = candidate;
+            break outer;
+          }
+        }
+      }
+    }
+    return { system, hall, table };
   }
 
-  // 如果仍然沒有任何線索 → 請先選桌
+  // 若 targetFull 還是空的，再用最後一筆 log 的單獨欄位兜
+  if (!targetFull && logsAll.length) {
+    const lastLog = logsAll.reduce((a,b)=>((a?.ts||0)>(b?.ts||0)?a:b));
+    if (lastLog?.system || lastLog?.hall || lastLog?.table) {
+      targetFull = [lastLog.system,lastLog.hall,lastLog.table].filter(Boolean).join('|');
+    } else if (lastLog?.table) {
+      targetFull = lastLog.table;
+    }
+  }
+
+  const parsed = smartParse(targetFull);
+  let { system, hall, table } = parsed;
+
+  // 3) 沒任何線索 → 請先選桌
   if (!system && !hall && !table) {
     return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
   }
 
-  // 匯總該桌紀錄
-  const logs = targetFull
+  // 4) 匯總該桌的所有紀錄（優先用 fullTableName 精準比對）
+  const logs = targetFull && targetFull.includes('|')
     ? logsAll.filter(x => x.fullTableName === targetFull)
-    : logsAll.filter(x => x.system === system && x.hall === hall && x.table === table);
+    : logsAll.filter(x =>
+        (x.fullTableName === targetFull) ||
+        (x.system === system && x.hall === hall && x.table === table) ||
+        (x.table === table) // 舊資料只有桌號時的退路
+      );
 
   const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
   const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
