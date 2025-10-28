@@ -1,4 +1,4 @@
-// index.js (Node 18+ / ESM) — 個人私聊版（含報表說明優化＋廳/桌顯示） 
+// index.js (Node 18+ / ESM) — 個人私聊版（圖片選系統＋桌別亂數標籤＋分頁規則＋報表優化）
 import 'dotenv/config';
 import express from 'express';
 import { Client, middleware } from '@line/bot-sdk';
@@ -18,11 +18,10 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 /* =========================
  * 常數
  * ========================= */
-// 1 柱代表多少金額（報表與換算皆用此常數）
-const UNIT = 100;
+const UNIT = 100; // 1柱=100元
 
 /* =========================
- * 伺服器層優化：降低 499 機率
+ * 伺服器層優化
  * ========================= */
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -36,7 +35,7 @@ const allowedUsers = new Set([
   'Ufaeaa194b93281c0380cfbfd59d5aee0',
   'U73759fc9139edfaf7c804509d0a8c07f',
   'U63918f9d8b44770747034598a351595e',
-  'U1cebd63109f62550c10df0ab835a900c', // 超級管理員
+  'U1cebd63109f62550c10df0ab835a900c',
   'U0ea07940728c64ae26385f366b5b9603',
   'U35cf199d3a707137efed545d782e11c0',
   'Udbc76d0c8fab9a80a1c6a7ef12ac5e81',
@@ -52,18 +51,17 @@ const allowedUsers = new Set([
   'U52dba780e8908d86ee340d1dc22569f0',
   'U92153cd0bc1c4f2b58c2f554b4f90000',
   'Ua7c28253f2ead5aafbbc76e6d062cfe7',
-  'Ua7c28253f2ead5aafbbc76e6d062cfe7',
 ]);
 
 /* =========================
- * 狀態暫存（僅私聊）
+ * 狀態暫存
  * ========================= */
-const userLastActiveTime = new Map(); // 最近互動時間
-const resultPressCooldown = new Map(); // 回報節流
-const userRecentInput = new Map(); // 暫存前10局
-const handledEventIds = new Map(); // 去重
+const userLastActiveTime = new Map();
+const resultPressCooldown = new Map();
+const userRecentInput = new Map();
+const handledEventIds = new Map();
 
-// 報表（私聊）
+// 報表
 const userCurrentTable = new Map();
 const userLastRecommend = new Map();
 const userBetLogs = new Map();
@@ -131,7 +129,7 @@ async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutM
 }
 
 /* =========================
- * 遊戲資料
+ * 遊戲資料（含 MT、金佰新）
  * ========================= */
 const tableData = {
   DG真人: {
@@ -156,17 +154,94 @@ const tableData = {
     百家樂: ['百家樂D01','百家樂D02','百家樂D03','百家樂D04','百家樂D05','百家樂D06','百家樂D07','極速百家樂D08','百家樂C01','百家樂C02','百家樂C03','百家樂C04','百家樂C05','百家樂C06','百家樂C07','極速百家樂C08','百家樂M01','百家樂M02','百家樂M03','極速百家樂M04'],
     龍虎鬥: ['D龍虎','M龍虎'],
   },
+  MT真人: {
+    中文廳: Array.from({length:10}, (_,i)=>`百家樂${i+1}`),
+    亞洲廳: ['百家樂11','百家樂12','百家樂13'],
+  },
+  金佰新百家: {
+    亞洲廳: Array.from({length:12},(_,i)=>`亞洲${i+1}廳`),
+    貴賓廳: ['貴賓1廳','貴賓2廳'],
+  },
 };
 
 /* =========================
- * Flex 產生器（僅私聊）
+ * 系統圖片（你給的 https 網址）
  * ========================= */
+const SYSTEM_CARDS = [
+  { title: '沙龍真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg' },
+  { title: '歐博真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg' },
+  { title: 'MT真人',   img: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg' },
+  { title: '金佰新百家', img: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg' },
+  { title: 'DG真人',   img: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg' },
+  { title: 'WM真人',   img: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg' },
+];
+
+/* =========================
+ * Flex 產生器
+ * ========================= */
+// 2x3 小卡：滿版圖、標題、綠色選擇鈕
+function buildGameSelectFlexCards() {
+  const card = (title, img) => ({
+    type: 'box',
+    layout: 'vertical',
+    cornerRadius: '12px',
+    backgroundColor: '#FFFFFF',
+    contents: [
+      {
+        type: 'image',
+        url: img,
+        size: 'full',
+        aspectMode: 'cover',
+        aspectRatio: '1:1',
+        gravity: 'center',
+        margin: 'none'
+      },
+      { type: 'text', text: title, align: 'center', weight: 'bold', margin: 'md', color: '#333333' },
+      { type: 'button',
+        style: 'primary',
+        color: '#00B900',
+        margin: 'md',
+        action: { type: 'message', label: '選擇', text: title } }
+    ],
+  });
+
+  const rows = [];
+  for (let i = 0; i < SYSTEM_CARDS.length; i += 3) {
+    rows.push({
+      type: 'box',
+      layout: 'horizontal',
+      spacing: 'md',
+      contents: SYSTEM_CARDS.slice(i, i+3).map(x => ({
+        type: 'box',
+        layout: 'vertical',
+        flex: 1,
+        contents: [ card(x.title, x.img) ],
+      })),
+    });
+  }
+
+  return {
+    type: 'bubble',
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '12px',
+      contents: [
+        { type: 'text', text: '請選擇系統', weight: 'bold', size: 'lg', align: 'center', color: '#00B900' },
+        { type: 'separator', margin: 'md' },
+        ...rows
+      ]
+    }
+  };
+}
+
+// 遊戲廳選擇
 function generateHallSelectFlex(gameName) {
   const halls = Object.keys(tableData[gameName] || {});
   return {
     type: 'bubble',
     body: { type: 'box', layout: 'vertical', contents: [
-      { type: 'text', text: `遊戲：${gameName}`, weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
+      { type: 'text', text: `系統：${gameName}`, weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
       { type: 'separator', margin: 'md' },
       { type: 'text', text: '請選擇遊戲廳', weight: 'bold', align: 'center', margin: 'md' },
       { type: 'box', layout: 'vertical', spacing: 'md', margin: 'lg', contents:
@@ -179,6 +254,13 @@ function generateHallSelectFlex(gameName) {
   };
 }
 
+// 單桌亂數標籤
+function randomTag() {
+  const pool = ['進行中', '熱門🔥', '推薦✅'];
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+// 牌桌列表（≤10 全部顯示；＞10：10 張 + 第11張「下一頁」）
 function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 10) {
   const startIndex = (page - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, tables.length);
@@ -188,7 +270,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
     type: 'bubble',
     body: { type: 'box', layout: 'vertical', contents: [
       { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
-      { type: 'text', text: '進行中', size: 'sm', color: '#555555', margin: 'sm' },
+      { type: 'text', text: randomTag(), size: 'sm', color: '#555555', margin: 'sm' },
       { type: 'text', text: `最低下注：${UNIT}元`, size: 'sm', color: '#555555', margin: 'sm' },
       { type: 'text', text: `最高限額：10000元`, size: 'sm', color: '#555555', margin: 'sm' },
       { type: 'button', action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` }, style: 'primary', color: '#00B900', margin: 'md' },
@@ -197,6 +279,7 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
 
   const carousel = { type: 'carousel', contents: bubbles };
 
+  // 只有在還有「下一頁」時才在第 11 張加入提示卡
   if (endIndex < tables.length) {
     carousel.contents.push({
       type: 'bubble',
@@ -296,7 +379,7 @@ function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
 }
 
 /* =========================
- * 注意事項 / 遊戲入口 / 報表卡
+ * 注意事項 / 報表卡
  * ========================= */
 const flexMessageIntroJson = {
   type: 'bubble',
@@ -318,7 +401,6 @@ const flexMessageIntroJson = {
   ]},
 };
 
-// 報表卡入口（文字改為多行詳解）
 function buildReportIntroFlex() {
   return {
     type: 'flex',
@@ -328,11 +410,7 @@ function buildReportIntroFlex() {
       body: { type: 'box', layout: 'vertical', contents: [
         { type: 'text', text: '報表', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
         {
-          type: 'box',
-          layout: 'vertical',
-          margin: 'sm',
-          spacing: 'xs',
-          contents: [
+          type: 'box', layout: 'vertical', margin: 'sm', spacing: 'xs', contents: [
             { type: 'text', text: '說明：報表採柱碼制（100 元 = 1 柱）。', wrap: true },
             { type: 'text', text: '1. 總下注金額：期間內所有投注合計。', wrap: true },
             { type: 'text', text: '2. 柱碼：淨勝負柱數（正為盈、負為虧）。', wrap: true },
@@ -360,16 +438,13 @@ function tryPublicKeyword(msg) {
 }
 
 /* =========================
- * 報表工具（私聊）
+ * 報表工具
  * ========================= */
 const extractSimpleTable = (t)=> (/([A-Z]\d{2,3})$/i.exec(t||'')?.[1]?.toUpperCase() || (t||''));
-
-// 安全分解 FULL 名稱，避免 undefined
 function splitFullName(full) {
   const [system, hall, table] = String(full || '').split('|');
   return { system: system || '—', hall: hall || '—', table: table || '—' };
 }
-
 function buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns) {
   const money = sumColumns * UNIT;
   return {
@@ -389,7 +464,6 @@ function buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumn
     },
   };
 }
-
 function buildDailyReportFlex(systems, tables, totalAmount, sumColumns) {
   const money = sumColumns * UNIT;
   return {
@@ -408,9 +482,7 @@ function buildDailyReportFlex(systems, tables, totalAmount, sumColumns) {
     },
   };
 }
-
 function columnsFromAmount(amount) { return Math.round(Number(amount || 0) / UNIT); }
-
 function getTodayRangeTimestamp() {
   const tz = 'Asia/Taipei'; const now = new Date();
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
@@ -424,13 +496,12 @@ function getTodayRangeTimestamp() {
  * 路由
  * ========================= */
 app.post('/webhook', middleware(config), async (req, res) => {
-  res.status(200).end(); // 立刻回 200
+  res.status(200).end();
 
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   for (const event of events) {
     if (dedupeEvent(event)) continue;
 
-    // 以 userId 節流
     const throttleKey = getChatId(event) || 'u';
     const now = Date.now();
     const last = userLastMsgAt.get(throttleKey) || 0;
@@ -457,7 +528,7 @@ async function handleEvent(event) {
   const userId = event.source?.userId;
   const userMessage = String(event.message.text || '').trim();
 
-  // 公開關鍵字（說明、報表入口、客服）
+  // 公開關鍵字
   const pub = tryPublicKeyword(userMessage);
   if (pub) return safeReply(event, pub);
 
@@ -469,7 +540,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 連線超時保護：兩分鐘未操作則重置
+  // 連線超時保護
   const lastActive = userLastActiveTime.get(userId) || 0;
   const firstTime = lastActive === 0;
   if (!firstTime && now - lastActive > INACTIVE_MS) {
@@ -487,24 +558,11 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
   }
   if (userMessage === '開始預測') {
-    // 這裡仍使用舊版文字選單（你若已換成圖片卡，改用那段即可）
-    return safeReply(event, { type: 'flex', altText: '請選擇遊戲', contents: {
-      type: 'bubble',
-      body: { type: 'box', layout: 'vertical', contents: [
-        { type: 'text', text: 'SKwin AI算牌系統', weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
-        { type: 'separator', margin: 'md' },
-        { type: 'text', text: '請選擇遊戲', align: 'center', margin: 'md', weight: 'bold' },
-        { type: 'box', layout: 'vertical', margin: 'lg', spacing: 'md', contents: [
-          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: 'DG真人', text: 'DG真人' } },
-          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '歐博真人', text: '歐博真人' } },
-          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '沙龍真人', text: '沙龍真人' } },
-          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: 'WM真人', text: 'WM真人' } },
-        ]},
-      ]},
-    }});
+    // 改為小卡圖片選擇系統
+    return safeReply(event, { type: 'flex', altText: '請選擇系統', contents: buildGameSelectFlexCards() });
   }
 
-  // 報表入口（私聊）
+  // 報表入口
   if (userMessage === '報表') {
     return safeReply(event, buildReportIntroFlex());
   }
@@ -535,11 +593,13 @@ async function handleEvent(event) {
     return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
   }
 
-  // 私聊：選單流程
-  if (['DG真人', '歐博真人', '沙龍真人', 'WM真人'].includes(userMessage)) {
+  // 遊戲選單流程
+  if (['DG真人', '歐博真人', '沙龍真人', 'WM真人', 'MT真人', '金佰新百家'].includes(userMessage)) {
     const hallFlex = generateHallSelectFlex(userMessage);
     return safeReply(event, { type: 'flex', altText: `${userMessage} 遊戲廳選擇`, contents: hallFlex });
   }
+
+  // 選到「系統|廳」
   if (userMessage.includes('|')) {
     const parts = userMessage.split('|');
     if (parts.length === 2) {
@@ -547,15 +607,12 @@ async function handleEvent(event) {
       if (tableData[gameName] && tableData[gameName][hallName]) {
         const tables = tableData[gameName][hallName];
         const flexTables = generateTableListFlex(gameName, hallName, tables, 1);
-        if (flexTables.contents?.length > 1) {
-          const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
-          const btn = nextPageBubble?.body?.contents?.find?.(c => c.type === 'button');
-          if (btn) btn.action.text = `nextPage|2|${gameName}|${hallName}`;
-        }
         return safeReply(event, { type: 'flex', altText: `${gameName} ${hallName} 牌桌列表 頁1`, contents: flexTables });
       }
     }
   }
+
+  // 下一頁
   if (userMessage.startsWith('nextPage|')) {
     const parts = userMessage.split('|');
     if (parts.length === 4) {
@@ -565,11 +622,6 @@ async function handleEvent(event) {
       if (tableData[gameName] && tableData[gameName][hallName]) {
         const tables = tableData[gameName][hallName];
         const flexTables = generateTableListFlex(gameName, hallName, tables, page);
-        if (flexTables.contents?.length > 1) {
-          const nextPageBubble = flexTables.contents[flexTables.contents.length - 1];
-          const btn = nextPageBubble?.body?.contents?.find?.(c => c.type === 'button');
-          if (btn) btn.action.text = `nextPage|${page + 1}|${gameName}|${hallName}`;
-        }
         return safeReply(event, { type: 'flex', altText: `${gameName} ${hallName} 牌桌列表 頁${page}`, contents: flexTables });
       }
     }
@@ -607,7 +659,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 開始分析（私聊）
+  // 開始分析
   if (userMessage.startsWith('開始分析|')) {
     const fullTableName = userMessage.split('|')[1];
     const rec = userRecentInput.get(userId);
@@ -621,10 +673,9 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果（私聊）
+  // 回報當局結果
   if (userMessage.startsWith('當局結果為|')) {
     const parts = userMessage.split('|');
-    // 私聊格式：當局結果為|SIDE|FULL
     if (parts.length === 3) {
       const nowTs = Date.now();
       const lastPress = resultPressCooldown.get(userId) || 0;
