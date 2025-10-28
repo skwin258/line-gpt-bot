@@ -601,53 +601,70 @@ async function handleEvent(event) {
     };
   }
 
-  if (userMessage === '當局報表') {
-    // A. 最新一次推薦（一定含 system/hall/table）
-    const lastRec  = userLastRecommend.get(userId) || null;
-    // B. 目前選桌
-    const fullSel  = userCurrentTable.get(userId) || '';
-    // C. 最後一筆已回報紀錄
-    const lastLog  = getLastLogForUser(userId);
-
-    let system = '', hall = '', table = '';
-
-    if (lastRec && lastRec.system) {
-      system = String(lastRec.system || '');
-      hall   = String(lastRec.hall   || '');
-      table  = String(lastRec.table  || '');
-    } else if (fullSel) {
-      const parsed = parseFullTableSafe(fullSel);
-      system = parsed.system;
-      hall   = parsed.hall;
-      table  = parsed.table;
-    } else if (lastLog) {
-      system = String(lastLog.system || '');
-      hall   = String(lastLog.hall   || '');
-      table  = String(lastLog.table  || '');
-    }
-
-    if (!system && !hall && !table) {
-      return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
-    }
-
-    const targetFull =
-      (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
-      (fullSel ? fullSel :
-      (lastLog && lastLog.fullTableName ? lastLog.fullTableName : ''));
-
-    const allLogs = userBetLogs.get(userId) || [];
-    const logs = targetFull
-      ? allLogs.filter(x => x.fullTableName === targetFull)
-      : allLogs.filter(x => x.system === system && x.hall === hall && x.table === table);
-
-    const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
-    const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-
-    return safeReply(
-      event,
-      buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
-    );
+ // 當局報表（私聊）
+if (/^\s*當局報表\s*$/.test(userMessage)) {
+  // A. 最新一次推薦（一定含 system/hall/table）
+  const lastRec  = userLastRecommend.get(userId) || null;
+  // B. 目前選桌
+  const fullSel  = userCurrentTable.get(userId) || '';
+  // C. 最後一筆已回報紀錄
+  const logsAll  = userBetLogs.get(userId) || [];
+  let lastLog = null;
+  if (logsAll.length > 0) {
+    lastLog = logsAll.reduce((a, b) => ((a?.ts || 0) > (b?.ts || 0) ? a : b));
   }
+
+  // 先決定要顯示的 system/hall/table（可能為空）
+  let system = '', hall = '', table = '';
+  if (lastRec && lastRec.system) {
+    system = String(lastRec.system || '');
+    hall   = String(lastRec.hall   || '');
+    table  = String(lastRec.table  || '');
+  } else if (fullSel) {
+    const parsed = (function parseFullTableSafe(full) {
+      if (!full || typeof full !== 'string') return { system: '', hall: '', table: '' };
+      const p = full.split('|'); return { system: p[0] ?? '', hall: p[1] ?? '', table: p[2] ?? '' };
+    })(fullSel);
+    system = parsed.system; hall = parsed.hall; table = parsed.table;
+  } else if (lastLog) {
+    system = String(lastLog.system || '');
+    hall   = String(lastLog.hall   || '');
+    table  = String(lastLog.table  || '');
+  }
+
+  // 目標 fullTableName：A > B > C
+  const targetFull =
+    (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
+    (fullSel ? fullSel :
+    (lastLog && lastLog.fullTableName ? lastLog.fullTableName : ''));
+
+  // ⚠️關鍵補強：如果前面三個欄位還是空，但我們有 targetFull，就用 targetFull 來補齊，
+  // 這樣就不會再出現「未指定」了。
+  if (targetFull && (!system || !hall || !table)) {
+    const p = targetFull.split('|');
+    system = system || (p[0] ?? '');
+    hall   = hall   || (p[1] ?? '');
+    table  = table  || (p[2] ?? '');
+  }
+
+  // 如果仍然沒有任何線索 → 請先選桌
+  if (!system && !hall && !table) {
+    return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
+  }
+
+  // 匯總該桌紀錄
+  const logs = targetFull
+    ? logsAll.filter(x => x.fullTableName === targetFull)
+    : logsAll.filter(x => x.system === system && x.hall === hall && x.table === table);
+
+  const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
+  const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+
+  return safeReply(
+    event,
+    buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
+  );
+}
 
   // 本日報表（私聊）
 if (/^\s*本日報表\s*$/.test(userMessage)) {
