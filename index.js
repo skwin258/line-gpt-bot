@@ -1,4 +1,4 @@
-// index.js (Node 18+ / ESM) — 個人私聊版（開始預測 → 有圖片的系統卡片）
+// index.js (Node 18+ / ESM) — 個人私聊版（小卡片 Carousel）
 import 'dotenv/config';
 import express from 'express';
 import { Client, middleware } from '@line/bot-sdk';
@@ -51,10 +51,10 @@ const allowedUsers = new Set([
 /* =========================
  * 狀態暫存（僅私聊）
  * ========================= */
-const userLastActiveTime = new Map(); // 最近互動時間
-const resultPressCooldown = new Map(); // 回報節流
-const userRecentInput = new Map(); // 暫存前10局
-const handledEventIds = new Map(); // 去重
+const userLastActiveTime = new Map();
+const resultPressCooldown = new Map();
+const userRecentInput = new Map();
+const handledEventIds = new Map();
 
 // 報表（私聊）
 const userCurrentTable = new Map();
@@ -149,18 +149,18 @@ const tableData = {
     百家樂: ['百家樂D01','百家樂D02','百家樂D03','百家樂D04','百家樂D05','百家樂D06','百家樂D07','極速百家樂D08','百家樂C01','百家樂C02','百家樂C03','百家樂C04','百家樂C05','百家樂C06','百家樂C07','極速百家樂C08','百家樂M01','百家樂M02','百家樂M03','極速百家樂M04'],
     龍虎鬥: ['D龍虎','M龍虎'],
   },
-  MT真人: { // 新增
+  MT真人: {
     中文廳: ['百家樂1','百家樂2','百家樂3','百家樂4','百家樂5','百家樂6','百家樂7','百家樂8','百家樂9','百家樂10'],
     亞洲廳: ['百家樂11','百家樂12','百家樂13'],
   },
-  金佰新: { // 新增
+  金佰新: {
     亞洲廳: ['亞洲1廳','亞洲2廳','亞洲3廳','亞洲4廳','亞洲5廳','亞洲6廳','亞洲7廳','亞洲8廳','亞洲9廳','亞洲10廳','亞洲11廳','亞洲12廳'],
     貴賓廳: ['貴賓1廳','貴賓2廳'],
   },
 };
 
 /* =========================
- * 系統選擇：有圖片的卡片（Carousel）
+ * 系統選擇：小卡片（Bubble size: "nano"）+ 圖片滿版
  * ========================= */
 const SYSTEM_CARD_LIST = [
   { title: 'DG百家',     sendText: 'DG真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg' },
@@ -171,19 +171,26 @@ const SYSTEM_CARD_LIST = [
   { title: '金佰新百家', sendText: '金佰新', img: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg' },
 ];
 
+// 極精簡小卡片（可一次看到 4~5 張）
 function buildSystemSelectCarousel() {
   return {
     type: 'carousel',
     contents: SYSTEM_CARD_LIST.map(card => ({
       type: 'bubble',
+      size: 'nano', // 關鍵：最小寬度
       body: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'md',
+        spacing: 'xs',
+        paddingAll: '6px', // 內距縮小
         contents: [
+          // 圖片滿版 + 正方形
           { type: 'image', url: card.img, size: 'full', aspectMode: 'cover', aspectRatio: '1:1' },
-          { type: 'text', text: card.title, weight: 'bold', size: 'md', align: 'center', margin: 'md', color: '#333333' },
-          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '選擇', text: card.sendText } },
+          // 標題小字置中
+          { type: 'text', text: card.title, weight: 'bold', size: 'sm', align: 'center', wrap: true, margin: 'xs', color: '#333333' },
+          // 低高度按鈕
+          { type: 'button', height: 'sm', style: 'primary', color: '#00B900',
+            action: { type: 'message', label: '選擇', text: card.sendText }, margin: 'xs' },
         ],
       },
     })),
@@ -419,13 +426,12 @@ function getTodayRangeTimestamp() {
  * 路由
  * ========================= */
 app.post('/webhook', middleware(config), async (req, res) => {
-  res.status(200).end(); // 立刻回 200
+  res.status(200).end();
 
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   for (const event of events) {
     if (dedupeEvent(event)) continue;
 
-    // 以 userId 節流
     const throttleKey = getChatId(event) || 'u';
     const now = Date.now();
     const last = userLastMsgAt.get(throttleKey) || 0;
@@ -452,7 +458,7 @@ async function handleEvent(event) {
   const userId = event.source?.userId;
   const userMessage = String(event.message.text || '').trim();
 
-  // 公開關鍵字（說明、報表入口、客服）
+  // 公開關鍵字
   const pub = tryPublicKeyword(userMessage);
   if (pub) return safeReply(event, pub);
 
@@ -464,7 +470,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 連線超時保護：兩分鐘未操作則重置
+  // 連線超時保護
   const lastActive = userLastActiveTime.get(userId) || 0;
   const firstTime = lastActive === 0;
   if (!firstTime && now - lastActive > INACTIVE_MS) {
@@ -482,13 +488,13 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
   }
 
-  // 新：開始預測 → 有圖片的系統卡片（Carousel）
+  // 開始預測 → 小卡片
   if (userMessage === '開始預測') {
     const carousel = buildSystemSelectCarousel();
     return safeReply(event, { type: 'flex', altText: '請選擇系統', contents: carousel });
   }
 
-  // 報表入口（私聊）
+  // 報表入口
   if (userMessage === '報表') {
     return safeReply(event, buildReportIntroFlex());
   }
@@ -517,7 +523,7 @@ async function handleEvent(event) {
     return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
   }
 
-  // 私聊：選單流程（含 MT / 金佰新）
+  // 選單流程（含 MT / 金佰新）
   if (['DG真人', '歐博真人', '沙龍真人', 'WM真人', 'MT真人', '金佰新'].includes(userMessage)) {
     const hallFlex = generateHallSelectFlex(userMessage);
     return safeReply(event, { type: 'flex', altText: `${userMessage} 遊戲廳選擇`, contents: hallFlex });
@@ -557,7 +563,7 @@ async function handleEvent(event) {
     }
   }
 
-  // 選擇桌號 -> 要求輸入前10局
+  // 選擇桌號 -> 輸入前10局
   if (userMessage.startsWith('選擇桌號|')) {
     const parts = userMessage.split('|');
     const gameName = parts[1];
@@ -568,7 +574,7 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前10局結果`, contents: generateInputInstructionFlex(fullTableName) });
   }
 
-  // 非法字元防呆（排除報表關鍵字）
+  // 非法字元防呆
   const isReportKeyword = (userMessage === '當局報表' || userMessage === '本日報表' || userMessage === '報表');
   if (!isReportKeyword &&
       userMessage.length >= 1 && userMessage.length <= 10 &&
@@ -576,12 +582,11 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'text', text: '偵測到無效字元，請僅使用「閒 / 莊 / 和」輸入，例：閒莊閒莊閒。' });
   }
 
-  // 接收前10局（3~10字）
+  // 接收前10局
   if (/^[閒莊和]{3,10}$/.test(userMessage)) {
     userRecentInput.set(userId, { seq: userMessage, ts: now });
     return safeReply(event, { type: 'text', text: '已接收前10局結果，請點擊「開始分析」按鈕開始計算。' });
   }
-  // 僅輸入但不足條件
   if (/^[閒莊和]+$/.test(userMessage)) {
     return safeReply(event, {
       type: 'text',
@@ -589,7 +594,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 開始分析（私聊）
+  // 開始分析
   if (userMessage.startsWith('開始分析|')) {
     const fullTableName = userMessage.split('|')[1];
     const rec = userRecentInput.get(userId);
@@ -603,10 +608,9 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果（私聊）
+  // 回報當局結果
   if (userMessage.startsWith('當局結果為|')) {
     const parts = userMessage.split('|');
-    // 私聊格式：當局結果為|SIDE|FULL
     if (parts.length === 3) {
       const nowTs = Date.now();
       const lastPress = resultPressCooldown.get(userId) || 0;
@@ -620,7 +624,7 @@ async function handleEvent(event) {
       const last = userLastRecommend.get(userId);
 
       if (last && last.fullTableName === fullTableName) {
-        const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
+        const cols = Math.round((last.amount || 0) / 100) * (actual === last.side ? 1 : -1);
         const money = cols * 100;
         const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
         const arr = userBetLogs.get(userId) || [];
