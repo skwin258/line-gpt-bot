@@ -201,7 +201,7 @@ const SYSTEM_CARDS = [
 function buildSystemSelectCarousel() {
   const bubbles = SYSTEM_CARDS.map((c) => ({
     type: 'bubble',
-    size: 'kilo', // 小卡
+    size: 'nano', // 小卡
     hero: {
       type: 'image',
       url: c.image,
@@ -415,15 +415,41 @@ function buildReportIntroFlex() {
     altText: '報表功能',
     contents: {
       type: 'bubble',
-      body: { type: 'box', layout: 'vertical', contents: [
-        { type: 'text', text: '報表', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
-        { type: 'text', text: '說明：100元為1柱', margin: 'sm' },
-        { type: 'separator', margin: 'md' },
-        { type: 'box', layout: 'horizontal', spacing: 'md', margin: 'md', contents: [
-          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '當局報表', text: '當局報表' }, flex: 1 },
-          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '本日報表', text: '本日報表' }, flex: 1 },
-        ]},
-      ]},
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          { type: 'text', text: '報表', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+
+          // ⬇⬇⬇ 這段是新的說明文字區塊 ⬇⬇⬇
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'sm',
+            spacing: 'xs',
+            contents: [
+              { type: 'text', text: '說明：報表採柱碼制（100 元 = 1 柱）。', wrap: true },
+              { type: 'text', text: '', wrap: true }, // 空行
+              { type: 'text', text: '1. 總下注金額：期間內所有投注合計。', wrap: true },
+              { type: 'text', text: '2. 柱碼：淨勝負柱數（正為盈、負為虧）。', wrap: true },
+              { type: 'text', text: '3. 輸贏金額：柱碼 × 100。', wrap: true },
+            ],
+          },
+          // ⬆⬆⬆ 這段是新的說明文字區塊 ⬆⬆⬆
+
+          { type: 'separator', margin: 'md' },
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'md',
+            margin: 'md',
+            contents: [
+              { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '當局報表', text: '當局報表' }, flex: 1 },
+              { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '本日報表', text: '本日報表' }, flex: 1 },
+            ],
+          },
+        ],
+      },
     },
   };
 }
