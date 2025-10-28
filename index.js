@@ -558,7 +558,7 @@ async function handleEvent(event) {
   }
 if (userMessage === '開始預測') {
   // 顯示「選擇系統」圖片小卡
-  const carousel = buildSystemCardsCarousel();
+  const carousel = buildSystemSelectCarousel();
   return safeReply(event, {
     type: 'flex',
     altText: '請選擇系統',
