@@ -1,4 +1,4 @@
-// index.js (Node 18+ / ESM) — 個人私聊版（含系統圖片卡 + 桌別狀態 + 分頁規則）
+// index.js (Node 18+ / ESM) — 個人私聊版（含系統圖片卡 + 桌別狀態 + 分頁規則 + 20局/至少6局 + 珠盤預覽 + 回報先顯示珠盤）
 import 'dotenv/config';
 import express from 'express';
 import { Client, middleware } from '@line/bot-sdk';
@@ -53,7 +53,7 @@ const allowedUsers = new Set([
  * ========================= */
 const userLastActiveTime = new Map(); // 最近互動時間
 const resultPressCooldown = new Map(); // 回報節流
-const userRecentInput = new Map(); // 暫存前10局
+const userRecentInput = new Map(); // 暫存前20局
 const handledEventIds = new Map(); // 去重
 
 // 報表（私聊）
@@ -165,30 +165,12 @@ const tableData = {
 
 // 圖片卡的資料（可改順序）
 const SYSTEM_CARDS = [
-  {
-    actionText: 'DG真人',
-    image: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg',
-  },
-  {
-    actionText: 'MT真人',
-    image: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg',
-  },
-  {
-    actionText: '歐博真人',
-    image: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg',
-  },
-  {
-    actionText: '沙龍真人',
-    image: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg',
-  },
-  {
-    actionText: 'WM真人',
-    image: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg',
-  },
-  {
-    actionText: '金佰新百家',
-    image: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg',
-  },
+  { actionText: 'DG真人', image: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg' },
+  { actionText: 'MT真人', image: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg' },
+  { actionText: '歐博真人', image: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg' },
+  { actionText: '沙龍真人', image: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg' },
+  { actionText: 'WM真人', image: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg' },
+  { actionText: '金佰新百家', image: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg' },
 ];
 
 // 系統選擇：小卡（圖片滿版）Carousel
@@ -196,28 +178,16 @@ function buildSystemSelectCarousel() {
   const bubbles = SYSTEM_CARDS.map((c) => ({
     type: 'bubble',
     size: 'nano', // 小卡
-    hero: {
-      type: 'image',
-      url: c.image,
-      size: 'full',
-      aspectRatio: '1:1',
-      aspectMode: 'cover',
-    },
+    hero: { type: 'image', url: c.image, size: 'full', aspectRatio: '1:1', aspectMode: 'cover' },
     body: {
       type: 'box',
       layout: 'vertical',
       spacing: 'sm',
       contents: [
-        {
-          type: 'button',
-          style: 'primary',
-          color: '#00B900',
-          action: { type: 'message', label: '選擇', text: c.actionText },
-        },
+        { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '選擇', text: c.actionText } },
       ],
     },
   }));
-
   // 這裡只回傳 carousel「內容」，不要再包 flex
   return { type: 'carousel', contents: bubbles };
 }
@@ -302,13 +272,46 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
   return carousel;
 }
 
+/* =========================
+ * 文字珠盤工具（新增）
+ * ========================= */
+const EMOJI = { '閒':'🔵', '莊':'🔴', '和':'🟢' };
+
+/** 直列高度6；先填滿第一欄再換下一欄 */
+function renderBeadplateText(seq, colHeight = 6) {
+  const syms = seq.split('').map(c => EMOJI[c] || c);
+  const cols = Math.ceil(syms.length / colHeight);
+  const lines = [];
+  for (let row = 0; row < colHeight; row++) {
+    let line = '';
+    for (let c = 0; c < cols; c++) {
+      const idx = c * colHeight + row;
+      if (idx < syms.length) line += syms[idx];
+    }
+    if (line) lines.push(line);
+  }
+  return lines.join('\n');
+}
+function beadplateFlex(seq) {
+  const text = renderBeadplateText(seq, 6);
+  return {
+    type: 'bubble',
+    body: { type: 'box', layout: 'vertical', contents: [
+      { type: 'text', text: '當前珠盤路', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+      { type: 'box', layout: 'vertical', margin: 'md', contents: [
+        { type: 'text', text, wrap: true }
+      ]},
+    ]},
+  };
+}
+
 function generateInputInstructionFlex(fullTableName) {
   return {
     type: 'bubble',
     body: { type: 'box', layout: 'vertical', contents: [
       { type: 'text', text: '分析中', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
       { type: 'text', text: `桌號：${fullTableName}`, margin: 'md', color: '#555555' },
-      { type: 'text', text: '請輸入前10局閒莊和的結果，最少需要輸入前三局，例:閒莊閒莊閒莊閒莊和閒', margin: 'md', color: '#555555', wrap: true },
+      { type: 'text', text: '請輸入前20局「閒/莊/和」，最少輸入 6 局。例如：閒莊閒閒莊和閒……', margin: 'md', color: '#555555', wrap: true },
       { type: 'button', action: { type: 'message', label: '開始分析', text: `開始分析|${fullTableName}` }, style: 'primary', color: '#00B900', margin: 'lg' },
     ]},
   };
@@ -601,99 +604,92 @@ async function handleEvent(event) {
     };
   }
 
-// 當局報表（私聊）
-if (/^\s*當局報表\s*$/.test(userMessage)) {
-  const logsAll = userBetLogs.get(userId) || [];
-  const lastRec = userLastRecommend.get(userId) || null;
-  const fullSel = userCurrentTable.get(userId) || null;
+  // 當局報表（私聊）— 改善未指定
+  if (/^\s*當局報表\s*$/.test(userMessage)) {
+    const logsAll = userBetLogs.get(userId) || [];
+    const lastRec = userLastRecommend.get(userId) || null;
+    const fullSel = userCurrentTable.get(userId) || null;
 
-  // 1) 先決定 targetFull（A > B > C）
-  let targetFull =
-    (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
-    (fullSel ? fullSel :
-    (logsAll.length ? (logsAll.reduce((a,b)=>((a?.ts||0)>(b?.ts||0)?a:b)).fullTableName || '') : ''));
+    // 1) 先決定 targetFull（A > B > C）
+    let targetFull =
+      (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
+      (fullSel ? fullSel :
+      (logsAll.length ? (logsAll.reduce((a,b)=>((a?.ts||0)>(b?.ts||0)?a:b)).fullTableName || '') : ''));
 
-  // 2) 對 targetFull 做「智慧解析」
-  function smartParse(full) {
-    if (!full || typeof full !== 'string') return { system:'', hall:'', table:'' };
-
-    // 常規：以「系統|廳別|桌別」切
-    const p = full.split('|');
-    let system = p[0] ?? '';
-    let hall   = p[1] ?? '';
-    let table  = p[2] ?? '';
-
-    // 若仍缺欄位，嘗試用最後一段當桌號反查 tableData
-    const candidate = table || p[p.length - 1];
-    if (!hall || !system) {
-      outer:
-      for (const [sys, halls] of Object.entries(tableData)) {
-        for (const [hallName, list] of Object.entries(halls)) {
-          if (list.includes(candidate)) {
-            if (!system) system = sys;
-            if (!hall)   hall   = hallName;
-            if (!table)  table  = candidate;
-            break outer;
+    // 2) 對 targetFull 做「智慧解析」
+    function smartParse(full) {
+      if (!full || typeof full !== 'string') return { system:'', hall:'', table:'' };
+      const p = full.split('|');
+      let system = p[0] ?? '';
+      let hall   = p[1] ?? '';
+      let table  = p[2] ?? '';
+      const candidate = table || p[p.length - 1];
+      if (!hall || !system) {
+        outer:
+        for (const [sys, halls] of Object.entries(tableData)) {
+          for (const [hallName, list] of Object.entries(halls)) {
+            if (list.includes(candidate)) {
+              if (!system) system = sys;
+              if (!hall)   hall   = hallName;
+              if (!table)  table  = candidate;
+              break outer;
+            }
           }
         }
       }
+      return { system, hall, table };
     }
-    return { system, hall, table };
-  }
 
-  // 若 targetFull 還是空的，再用最後一筆 log 的單獨欄位兜
-  if (!targetFull && logsAll.length) {
-    const lastLog = logsAll.reduce((a,b)=>((a?.ts||0)>(b?.ts||0)?a:b));
-    if (lastLog?.system || lastLog?.hall || lastLog?.table) {
-      targetFull = [lastLog.system,lastLog.hall,lastLog.table].filter(Boolean).join('|');
-    } else if (lastLog?.table) {
-      targetFull = lastLog.table;
+    if (!targetFull && logsAll.length) {
+      const lastLog = logsAll.reduce((a,b)=>((a?.ts||0)>(b?.ts||0)?a:b));
+      if (lastLog?.system || lastLog?.hall || lastLog?.table) {
+        targetFull = [lastLog.system,lastLog.hall,lastLog.table].filter(Boolean).join('|');
+      } else if (lastLog?.table) {
+        targetFull = lastLog.table;
+      }
     }
+
+    const parsed = smartParse(targetFull);
+    let { system, hall, table } = parsed;
+
+    if (!system && !hall && !table) {
+      return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
+    }
+
+    const logs = targetFull && targetFull.includes('|')
+      ? logsAll.filter(x => x.fullTableName === targetFull)
+      : logsAll.filter(x =>
+          (x.fullTableName === targetFull) ||
+          (x.system === system && x.hall === hall && x.table === table) ||
+          (x.table === table)
+        );
+
+    const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
+    const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+
+    return safeReply(
+      event,
+      buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
+    );
   }
-
-  const parsed = smartParse(targetFull);
-  let { system, hall, table } = parsed;
-
-  // 3) 沒任何線索 → 請先選桌
-  if (!system && !hall && !table) {
-    return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
-  }
-
-  // 4) 匯總該桌的所有紀錄（優先用 fullTableName 精準比對）
-  const logs = targetFull && targetFull.includes('|')
-    ? logsAll.filter(x => x.fullTableName === targetFull)
-    : logsAll.filter(x =>
-        (x.fullTableName === targetFull) ||
-        (x.system === system && x.hall === hall && x.table === table) ||
-        (x.table === table) // 舊資料只有桌號時的退路
-      );
-
-  const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
-  const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-
-  return safeReply(
-    event,
-    buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
-  );
-}
 
   // 本日報表（私聊）
-if (/^\s*本日報表\s*$/.test(userMessage)) {
-  const logs = userBetLogs.get(userId) || [];
-  const { startMs, endMs } = getTodayRangeTimestamp();
-  const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
+  if (/^\s*本日報表\s*$/.test(userMessage)) {
+    const logs = userBetLogs.get(userId) || [];
+    const { startMs, endMs } = getTodayRangeTimestamp();
+    const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
 
-  if (todayLogs.length === 0) {
-    return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
+    if (todayLogs.length === 0) {
+      return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
+    }
+
+    const systems = [...new Set(todayLogs.map(x => x.system).filter(Boolean))];
+    const tables  = [...new Set(todayLogs.map(x => x.table ).filter(Boolean))];
+    const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const sumColumns  = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+
+    return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
   }
-
-  const systems = [...new Set(todayLogs.map(x => x.system).filter(Boolean))];
-  const tables  = [...new Set(todayLogs.map(x => x.table ).filter(Boolean))];
-  const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-  const sumColumns  = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-
-  return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
-}
 
   // 私聊：選單流程（系統 → 廳）
   const gameKeys = Object.keys(tableData);
@@ -730,7 +726,7 @@ if (/^\s*本日報表\s*$/.test(userMessage)) {
     }
   }
 
-  // 選擇桌號 -> 要求輸入前10局
+  // 選擇桌號 -> 要求輸入前20局（最少6局）
   if (userMessage.startsWith('選擇桌號|')) {
     const parts = userMessage.split('|');
     const gameName = parts[1];
@@ -738,27 +734,30 @@ if (/^\s*本日報表\s*$/.test(userMessage)) {
     const tableNumber = parts[3];
     const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
     userCurrentTable.set(userId, fullTableName);
-    return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前10局結果`, contents: generateInputInstructionFlex(fullTableName) });
+    return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前20局結果`, contents: generateInputInstructionFlex(fullTableName) });
   }
 
   // 非法字元防呆（排除報表關鍵字）
   const isReportKeyword = (userMessage === '當局報表' || userMessage === '本日報表' || userMessage === '報表');
   if (!isReportKeyword &&
-      userMessage.length >= 1 && userMessage.length <= 10 &&
+      userMessage.length >= 1 && userMessage.length <= 20 &&
       /^[\u4e00-\u9fa5]+$/.test(userMessage) && !/^[閒莊和]+$/.test(userMessage)) {
     return safeReply(event, { type: 'text', text: '偵測到無效字元，請僅使用「閒 / 莊 / 和」輸入，例：閒莊閒莊閒。' });
   }
 
-  // 接收前10局（3~10字）
-  if (/^[閒莊和]{3,10}$/.test(userMessage)) {
+  // 接收前20局（6~20字）→ 同步送出珠盤預覽卡
+  if (/^[閒莊和]{6,20}$/.test(userMessage)) {
     userRecentInput.set(userId, { seq: userMessage, ts: now });
-    return safeReply(event, { type: 'text', text: '已接收前10局結果，請點擊「開始分析」按鈕開始計算。' });
+    return safeReply(event, [
+      { type: 'text', text: '已接收序列，請點「開始分析」。' },
+      { type: 'flex', altText: '珠盤預覽', contents: beadplateFlex(userMessage) },
+    ]);
   }
   // 僅輸入但不足條件
   if (/^[閒莊和]+$/.test(userMessage)) {
     return safeReply(event, {
       type: 'text',
-      text: '目前尚未輸入前10局內結果資訊， 無法為您做詳細分析，請先輸入前10局內閒莊和的結果，最少需要輸入前三局的結果，例:閒莊閒莊閒閒和莊。',
+      text: '目前尚未達最少 6 局，請輸入 6~20 個字的「閒/莊/和」。',
     });
   }
 
@@ -766,17 +765,17 @@ if (/^\s*本日報表\s*$/.test(userMessage)) {
   if (userMessage.startsWith('開始分析|')) {
     const fullTableName = userMessage.split('|')[1];
     const rec = userRecentInput.get(userId);
-    if (!rec || !/^[閒莊和]{3,10}$/.test(rec.seq)) {
+    if (!rec || !/^[閒莊和]{6,20}$/.test(rec.seq)) {
       return safeReply(event, {
         type: 'text',
-        text: '目前尚未輸入前10局內結果資訊， 無法為您做詳細分析，請先輸入前10局內閒莊和的結果，最少需要輸入前三局的結果，例:閒莊閒莊閒閒和莊。',
+        text: '目前尚未輸入有效序列（需 6~20 局）。',
       });
     }
     const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果（私聊）
+  // 回報當局結果（私聊）→ 先顯示「當前珠盤路」卡，再出一張新的分析卡
   if (userMessage.startsWith('當局結果為|')) {
     const parts = userMessage.split('|');
     // 私聊格式：當局結果為|SIDE|FULL
@@ -801,6 +800,13 @@ if (/^\s*本日報表\s*$/.test(userMessage)) {
         userBetLogs.set(userId, arr);
       }
 
+      // 先送珠盤
+      const rec = userRecentInput.get(userId);
+      if (rec?.seq) {
+        await safeReply(event, { type: 'flex', altText: '當前珠盤路', contents: beadplateFlex(rec.seq) });
+      }
+
+      // 再送新分析卡
       const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
       return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
     }
