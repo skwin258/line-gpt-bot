@@ -649,6 +649,24 @@ async function handleEvent(event) {
     );
   }
 
+  // 本日報表（私聊）
+if (/^\s*本日報表\s*$/.test(userMessage)) {
+  const logs = userBetLogs.get(userId) || [];
+  const { startMs, endMs } = getTodayRangeTimestamp();
+  const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
+
+  if (todayLogs.length === 0) {
+    return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
+  }
+
+  const systems = [...new Set(todayLogs.map(x => x.system).filter(Boolean))];
+  const tables  = [...new Set(todayLogs.map(x => x.table ).filter(Boolean))];
+  const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  const sumColumns  = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+
+  return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
+}
+
   // 私聊：選單流程（系統 → 廳）
   const gameKeys = Object.keys(tableData);
   if (gameKeys.includes(userMessage)) {
