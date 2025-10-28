@@ -1,4 +1,4 @@
-// index.js (Node 18+ / ESM) — 個人私聊版（圖片選系統＋桌別亂數標籤＋分頁規則＋報表優化）
+// index.js (Node 18+ / ESM) — 個人私聊版（含系統圖片卡 + 桌別狀態 + 分頁規則）
 import 'dotenv/config';
 import express from 'express';
 import { Client, middleware } from '@line/bot-sdk';
@@ -16,12 +16,7 @@ const client = new Client(config);
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /* =========================
- * 常數
- * ========================= */
-const UNIT = 100; // 1柱=100元
-
-/* =========================
- * 伺服器層優化
+ * 伺服器層優化：降低 499 機率
  * ========================= */
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -35,7 +30,7 @@ const allowedUsers = new Set([
   'Ufaeaa194b93281c0380cfbfd59d5aee0',
   'U73759fc9139edfaf7c804509d0a8c07f',
   'U63918f9d8b44770747034598a351595e',
-  'U1cebd63109f62550c10df0ab835a900c',
+  'U1cebd63109f62550c10df0ab835a900c', // 超級管理員
   'U0ea07940728c64ae26385f366b5b9603',
   'U35cf199d3a707137efed545d782e11c0',
   'Udbc76d0c8fab9a80a1c6a7ef12ac5e81',
@@ -54,14 +49,14 @@ const allowedUsers = new Set([
 ]);
 
 /* =========================
- * 狀態暫存
+ * 狀態暫存（僅私聊）
  * ========================= */
-const userLastActiveTime = new Map();
-const resultPressCooldown = new Map();
-const userRecentInput = new Map();
-const handledEventIds = new Map();
+const userLastActiveTime = new Map(); // 最近互動時間
+const resultPressCooldown = new Map(); // 回報節流
+const userRecentInput = new Map(); // 暫存前10局
+const handledEventIds = new Map(); // 去重
 
-// 報表
+// 報表（私聊）
 const userCurrentTable = new Map();
 const userLastRecommend = new Map();
 const userBetLogs = new Map();
@@ -129,7 +124,7 @@ async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutM
 }
 
 /* =========================
- * 遊戲資料（含 MT、金佰新）
+ * 遊戲資料
  * ========================= */
 const tableData = {
   DG真人: {
@@ -155,93 +150,90 @@ const tableData = {
     龍虎鬥: ['D龍虎','M龍虎'],
   },
   MT真人: {
-    中文廳: Array.from({length:10}, (_,i)=>`百家樂${i+1}`),
+    中文廳: ['百家樂1','百家樂2','百家樂3','百家樂4','百家樂5','百家樂6','百家樂7','百家樂8','百家樂9','百家樂10'],
     亞洲廳: ['百家樂11','百家樂12','百家樂13'],
   },
   金佰新百家: {
-    亞洲廳: Array.from({length:12},(_,i)=>`亞洲${i+1}廳`),
+    亞洲廳: ['亞洲1廳','亞洲2廳','亞洲3廳','亞洲4廳','亞洲5廳','亞洲6廳','亞洲7廳','亞洲8廳','亞洲9廳','亞洲10廳','亞洲11廳','亞洲12廳'],
     貴賓廳: ['貴賓1廳','貴賓2廳'],
   },
 };
 
 /* =========================
- * 系統圖片（你給的 https 網址）
+ * Flex 產生器（僅私聊）
  * ========================= */
+
+// 圖片卡的資料（可改順序）
 const SYSTEM_CARDS = [
-  { title: '沙龍真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg' },
-  { title: '歐博真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg' },
-  { title: 'MT真人',   img: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg' },
-  { title: '金佰新百家', img: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg' },
-  { title: 'DG真人',   img: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg' },
-  { title: 'WM真人',   img: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg' },
+  {
+    title: '沙龍百家',
+    actionText: '沙龍真人',
+    image: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg',
+  },
+  {
+    title: '歐博百家',
+    actionText: '歐博真人',
+    image: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg',
+  },
+  {
+    title: 'MT百家',
+    actionText: 'MT真人',
+    image: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg',
+  },
+  {
+    title: '金佰新百家',
+    actionText: '金佰新百家',
+    image: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg',
+  },
+  {
+    title: 'DG百家',
+    actionText: 'DG真人',
+    image: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg',
+  },
+  {
+    title: 'WM百家',
+    actionText: 'WM真人',
+    image: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg',
+  },
 ];
 
-/* =========================
- * Flex 產生器
- * ========================= */
-// 2x3 小卡：滿版圖、標題、綠色選擇鈕
-function buildGameSelectFlexCards() {
-  const card = (title, img) => ({
-    type: 'box',
-    layout: 'vertical',
-    cornerRadius: '12px',
-    backgroundColor: '#FFFFFF',
-    contents: [
-      {
-        type: 'image',
-        url: img,
-        size: 'full',
-        aspectMode: 'cover',
-        aspectRatio: '1:1',
-        gravity: 'center',
-        margin: 'none'
-      },
-      { type: 'text', text: title, align: 'center', weight: 'bold', margin: 'md', color: '#333333' },
-      { type: 'button',
-        style: 'primary',
-        color: '#00B900',
-        margin: 'md',
-        action: { type: 'message', label: '選擇', text: title } }
-    ],
-  });
-
-  const rows = [];
-  for (let i = 0; i < SYSTEM_CARDS.length; i += 3) {
-    rows.push({
-      type: 'box',
-      layout: 'horizontal',
-      spacing: 'md',
-      contents: SYSTEM_CARDS.slice(i, i+3).map(x => ({
-        type: 'box',
-        layout: 'vertical',
-        flex: 1,
-        contents: [ card(x.title, x.img) ],
-      })),
-    });
-  }
-
-  return {
+// 系統選擇：小卡（圖片滿版）Carousel
+function buildSystemSelectCarousel() {
+  const bubbles = SYSTEM_CARDS.map((c) => ({
     type: 'bubble',
+    size: 'kilo', // 小卡
+    hero: {
+      type: 'image',
+      url: c.image,
+      size: 'full',
+      aspectRatio: '1:1',
+      aspectMode: 'cover',
+    },
     body: {
       type: 'box',
       layout: 'vertical',
-      paddingAll: '12px',
+      spacing: 'sm',
       contents: [
-        { type: 'text', text: '請選擇系統', weight: 'bold', size: 'lg', align: 'center', color: '#00B900' },
-        { type: 'separator', margin: 'md' },
-        ...rows
-      ]
-    }
-  };
+        { type: 'text', text: c.title, weight: 'bold', size: 'md', align: 'center' },
+        {
+          type: 'button',
+          style: 'primary',
+          color: '#00B900',
+          action: { type: 'message', label: '選擇', text: c.actionText },
+        },
+      ],
+    },
+  }));
+
+  return { type: 'flex', altText: '請選擇系統', contents: { type: 'carousel', contents: bubbles } };
 }
 
-// 遊戲廳選擇
 function generateHallSelectFlex(gameName) {
   const halls = Object.keys(tableData[gameName] || {});
   return {
     type: 'bubble',
     body: { type: 'box', layout: 'vertical', contents: [
-      { type: 'text', text: `系統：${gameName}`, weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
+      { type: 'text', text: `遊戲：${gameName}`, weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
       { type: 'separator', margin: 'md' },
       { type: 'text', text: '請選擇遊戲廳', weight: 'bold', align: 'center', margin: 'md' },
       { type: 'box', layout: 'vertical', spacing: 'md', margin: 'lg', contents:
@@ -254,32 +246,44 @@ function generateHallSelectFlex(gameName) {
   };
 }
 
-// 單桌亂數標籤
-function randomTag() {
-  const pool = ['進行中', '熱門🔥', '推薦✅'];
-  return pool[Math.floor(Math.random() * pool.length)];
+// ===== 狀態標籤工具（進行中 / 熱門🔥 / 推薦✅） =====
+const STATUS_BADGES = ['進行中', '熱門🔥', '推薦✅'];
+function buildStatusListForHall(tables) {
+  const shuffled = [...STATUS_BADGES].sort(() => Math.random() - 0.5);
+  return tables.map((_t, i) => {
+    if (tables.length <= 3 && Math.random() < 0.4) return null; // <=3 桌：可能沒有標籤
+    return shuffled[i % shuffled.length]; // 循環分配
+  });
 }
 
-// 牌桌列表（≤10 全部顯示；＞10：10 張 + 第11張「下一頁」）
+// 牌桌列表（含狀態標籤 + 新分頁規則）
 function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 10) {
+  const statusList = buildStatusListForHall(tables);
+
   const startIndex = (page - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, tables.length);
+  const endIndex   = Math.min(startIndex + pageSize, tables.length);
   const pageTables = tables.slice(startIndex, endIndex);
 
-  const bubbles = pageTables.map((table) => ({
-    type: 'bubble',
-    body: { type: 'box', layout: 'vertical', contents: [
-      { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
-      { type: 'text', text: randomTag(), size: 'sm', color: '#555555', margin: 'sm' },
-      { type: 'text', text: `最低下注：${UNIT}元`, size: 'sm', color: '#555555', margin: 'sm' },
-      { type: 'text', text: `最高限額：10000元`, size: 'sm', color: '#555555', margin: 'sm' },
-      { type: 'button', action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` }, style: 'primary', color: '#00B900', margin: 'md' },
-    ]},
-  }));
+  const bubbles = pageTables.map((table, idxOnPage) => {
+    const idxAll   = startIndex + idxOnPage;
+    const status   = statusList[idxAll];
+    const statusText = status ? status : ' ';
+
+    return {
+      type: 'bubble',
+      body: { type: 'box', layout: 'vertical', contents: [
+        { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
+        { type: 'text', text: statusText, size: 'sm', color: '#666666', margin: 'sm' },
+        { type: 'text', text: '最低下注：100元', size: 'sm', color: '#555555', margin: 'sm' },
+        { type: 'text', text: '最高限額：10000元', size: 'sm', color: '#555555', margin: 'sm' },
+        { type: 'button', action: { type: 'message', label: '選擇', text: `選擇桌號|${gameName}|${hallName}|${table}` }, style: 'primary', color: '#00B900', margin: 'md' },
+      ]},
+    };
+  });
 
   const carousel = { type: 'carousel', contents: bubbles };
 
-  // 只有在還有「下一頁」時才在第 11 張加入提示卡
+  // 只有還有下一頁時才加「下一頁」卡；≤10 桌不會出現分頁卡
   if (endIndex < tables.length) {
     carousel.contents.push({
       type: 'bubble',
@@ -305,10 +309,10 @@ function generateInputInstructionFlex(fullTableName) {
 }
 
 function randHundreds(min, max) {
-  const start = Math.ceil(min / UNIT);
-  const end = Math.floor(max / UNIT);
+  const start = Math.ceil(min / 100);
+  const end = Math.floor(max / 100);
   const pick = Math.floor(Math.random() * (end - start + 1)) + start;
-  return pick * UNIT;
+  return pick * 100;
 }
 const pickOne = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
@@ -334,9 +338,9 @@ function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
   const passRate = Math.floor(Math.random() * (90 - 45 + 1)) + 45;
 
   let betLevel = '觀望';
-  let betAmount = UNIT;
-  if (passRate <= 50) { betLevel = '觀望'; betAmount = UNIT; }
-  else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(UNIT, 1000); }
+  let betAmount = 100;
+  if (passRate <= 50) { betLevel = '觀望'; betAmount = 100; }
+  else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(100, 1000); }
   else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
   else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
 
@@ -409,14 +413,7 @@ function buildReportIntroFlex() {
       type: 'bubble',
       body: { type: 'box', layout: 'vertical', contents: [
         { type: 'text', text: '報表', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
-        {
-          type: 'box', layout: 'vertical', margin: 'sm', spacing: 'xs', contents: [
-            { type: 'text', text: '說明：報表採柱碼制（100 元 = 1 柱）。', wrap: true },
-            { type: 'text', text: '1. 總下注金額：期間內所有投注合計。', wrap: true },
-            { type: 'text', text: '2. 柱碼：淨勝負柱數（正為盈、負為虧）。', wrap: true },
-            { type: 'text', text: '3. 輸贏金額：柱碼 × 100。', wrap: true },
-          ],
-        },
+        { type: 'text', text: '說明：100元為1柱', margin: 'sm' },
         { type: 'separator', margin: 'md' },
         { type: 'box', layout: 'horizontal', spacing: 'md', margin: 'md', contents: [
           { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '當局報表', text: '當局報表' }, flex: 1 },
@@ -438,51 +435,32 @@ function tryPublicKeyword(msg) {
 }
 
 /* =========================
- * 報表工具
+ * 報表工具（私聊）
  * ========================= */
 const extractSimpleTable = (t)=> (/([A-Z]\d{2,3})$/i.exec(t||'')?.[1]?.toUpperCase() || (t||''));
-function splitFullName(full) {
-  const [system, hall, table] = String(full || '').split('|');
-  return { system: system || '—', hall: hall || '—', table: table || '—' };
-}
 function buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns) {
-  const money = sumColumns * UNIT;
-  return {
-    type: 'flex',
-    altText: '當局報表',
-    contents: {
-      type: 'bubble',
-      body: { type: 'box', layout: 'vertical', contents: [
-        { type: 'text', text: '(當局報表)', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
-        { type: 'text', text: `系統：${system}`, margin: 'sm' },
-        { type: 'text', text: `廳別：${hall}`, margin: 'sm' },
-        { type: 'text', text: `桌別：${extractSimpleTable(table)}`, margin: 'sm' },
-        { type: 'text', text: `總下注金額：${totalAmount}`, margin: 'sm' },
-        { type: 'text', text: `輸贏金額：${money >= 0 ? '+' : ''}${money}`, margin: 'sm' },
-        { type: 'text', text: `柱碼：${sumColumns >= 0 ? '+' : ''}${sumColumns}柱`, margin: 'sm' },
-      ]}},
-    },
-  };
+  const money = sumColumns * 100;
+  return { type: 'flex', altText: '當局報表', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [
+    { type: 'text', text: '(當局報表)', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+    { type: 'text', text: `廳別：${hall}`, margin: 'sm' },
+    { type: 'text', text: `桌別：${extractSimpleTable(table)}`, margin: 'sm' },
+    { type: 'text', text: `總下注金額：${totalAmount}`, margin: 'sm' },
+    { type: 'text', text: `輸贏金額：${money >= 0 ? '+' : ''}${money}`, margin: 'sm' },
+    { type: 'text', text: `柱碼：${sumColumns >= 0 ? '+' : ''}${sumColumns}柱`, margin: 'sm' },
+  ]}}};
 }
 function buildDailyReportFlex(systems, tables, totalAmount, sumColumns) {
-  const money = sumColumns * UNIT;
-  return {
-    type: 'flex',
-    altText: '本日報表',
-    contents: {
-      type: 'bubble',
-      body: { type: 'box', layout: 'vertical', contents: [
-        { type: 'text', text: '(本日報表)', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
-        { type: 'text', text: `系統：${systems.join('/')}`, margin: 'sm', wrap: true },
-        { type: 'text', text: `桌別：${tables.map(extractSimpleTable).join('/')}`, margin: 'sm', wrap: true },
-        { type: 'text', text: `總下注金額：${totalAmount}`, margin: 'sm' },
-        { type: 'text', text: `輸贏金額：${money >= 0 ? '+' : ''}${money}`, margin: 'sm' },
-        { type: 'text', text: `柱碼：${sumColumns >= 0 ? '+' : ''}${sumColumns}柱`, margin: 'sm' },
-      ]}},
-    },
-  };
+  const money = sumColumns * 100;
+  return { type: 'flex', altText: '本日報表', contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [
+    { type: 'text', text: '(本日報表)', weight: 'bold', size: 'lg', color: '#00B900', align: 'center' },
+    { type: 'text', text: `系統：${systems.join('/')}`, margin: 'sm', wrap: true },
+    { type: 'text', text: `桌別：${tables.map(extractSimpleTable).join('/')}`, margin: 'sm', wrap: true },
+    { type: 'text', text: `總下注金額：${totalAmount}`, margin: 'sm' },
+    { type: 'text', text: `輸贏金額：${money >= 0 ? '+' : ''}${money}`, margin: 'sm' },
+    { type: 'text', text: `柱碼：${sumColumns >= 0 ? '+' : ''}${sumColumns}柱`, margin: 'sm' },
+  ]}}};
 }
-function columnsFromAmount(amount) { return Math.round(Number(amount || 0) / UNIT); }
+function columnsFromAmount(amount) { return Math.round(Number(amount || 0) / 100); }
 function getTodayRangeTimestamp() {
   const tz = 'Asia/Taipei'; const now = new Date();
   const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
@@ -496,12 +474,13 @@ function getTodayRangeTimestamp() {
  * 路由
  * ========================= */
 app.post('/webhook', middleware(config), async (req, res) => {
-  res.status(200).end();
+  res.status(200).end(); // 立刻回 200
 
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   for (const event of events) {
     if (dedupeEvent(event)) continue;
 
+    // 以 userId 節流
     const throttleKey = getChatId(event) || 'u';
     const now = Date.now();
     const last = userLastMsgAt.get(throttleKey) || 0;
@@ -528,7 +507,7 @@ async function handleEvent(event) {
   const userId = event.source?.userId;
   const userMessage = String(event.message.text || '').trim();
 
-  // 公開關鍵字
+  // 公開關鍵字（說明、報表入口、客服）
   const pub = tryPublicKeyword(userMessage);
   if (pub) return safeReply(event, pub);
 
@@ -540,7 +519,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 連線超時保護
+  // 連線超時保護：兩分鐘未操作則重置
   const lastActive = userLastActiveTime.get(userId) || 0;
   const firstTime = lastActive === 0;
   if (!firstTime && now - lastActive > INACTIVE_MS) {
@@ -558,27 +537,25 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
   }
   if (userMessage === '開始預測') {
-    // 改為小卡圖片選擇系統
-    return safeReply(event, { type: 'flex', altText: '請選擇系統', contents: buildGameSelectFlexCards() });
+    // 直接顯示：系統圖片小卡 Carousel
+    return safeReply(event, buildSystemSelectCarousel());
   }
 
-  // 報表入口
+  // 報表入口（私聊）
   if (userMessage === '報表') {
     return safeReply(event, buildReportIntroFlex());
   }
 
-  // 私聊報表：當局
+  // 私聊報表
   if (userMessage === '當局報表') {
     const full = userCurrentTable.get(userId);
     if (!full) return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
-    const { system, hall, table } = splitFullName(full);
+    const [system, hall, table] = full.split('|');
     const logs = (userBetLogs.get(userId) || []).filter(x => x.fullTableName === full);
     const totalAmount = logs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
     const sumColumns = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
     return safeReply(event, buildRoundReportFlexCurrent(system, hall, table, totalAmount, sumColumns));
   }
-
-  // 私聊報表：本日
   if (userMessage === '本日報表') {
     const logs = userBetLogs.get(userId) || [];
     const { startMs, endMs } = getTodayRangeTimestamp();
@@ -593,13 +570,14 @@ async function handleEvent(event) {
     return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
   }
 
-  // 遊戲選單流程
-  if (['DG真人', '歐博真人', '沙龍真人', 'WM真人', 'MT真人', '金佰新百家'].includes(userMessage)) {
+  // 私聊：選單流程（系統 → 廳）
+  const gameKeys = Object.keys(tableData);
+  if (gameKeys.includes(userMessage)) {
     const hallFlex = generateHallSelectFlex(userMessage);
     return safeReply(event, { type: 'flex', altText: `${userMessage} 遊戲廳選擇`, contents: hallFlex });
   }
 
-  // 選到「系統|廳」
+  // 廳 → 桌列表
   if (userMessage.includes('|')) {
     const parts = userMessage.split('|');
     if (parts.length === 2) {
@@ -612,7 +590,7 @@ async function handleEvent(event) {
     }
   }
 
-  // 下一頁
+  // 分頁
   if (userMessage.startsWith('nextPage|')) {
     const parts = userMessage.split('|');
     if (parts.length === 4) {
@@ -659,7 +637,7 @@ async function handleEvent(event) {
     });
   }
 
-  // 開始分析
+  // 開始分析（私聊）
   if (userMessage.startsWith('開始分析|')) {
     const fullTableName = userMessage.split('|')[1];
     const rec = userRecentInput.get(userId);
@@ -673,9 +651,10 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果
+  // 回報當局結果（私聊）
   if (userMessage.startsWith('當局結果為|')) {
     const parts = userMessage.split('|');
+    // 私聊格式：當局結果為|SIDE|FULL
     if (parts.length === 3) {
       const nowTs = Date.now();
       const lastPress = resultPressCooldown.get(userId) || 0;
@@ -690,7 +669,7 @@ async function handleEvent(event) {
 
       if (last && last.fullTableName === fullTableName) {
         const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
-        const money = cols * UNIT;
+        const money = cols * 100;
         const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
         const arr = userBetLogs.get(userId) || [];
         arr.push(entry);
