@@ -246,13 +246,17 @@ function generateHallSelectFlex(gameName) {
   };
 }
 
-// ===== 狀態標籤工具（進行中 / 熱門🔥 / 推薦✅） =====
-const STATUS_BADGES = ['進行中', '熱門🔥', '推薦✅'];
+// ===== 狀態標籤工具（每桌獨立隨機） =====
 function buildStatusListForHall(tables) {
-  const shuffled = [...STATUS_BADGES].sort(() => Math.random() - 0.5);
-  return tables.map((_t, i) => {
-    if (tables.length <= 3 && Math.random() < 0.4) return null; // <=3 桌：可能沒有標籤
-    return shuffled[i % shuffled.length]; // 循環分配
+  const labels = ['進行中', '熱門🔥', '推薦✅'];
+  // p = 顯示標籤的機率（想每桌一定有標籤，改成 1.0）
+  const p = 0.7;
+  return tables.map(() => {
+    if (Math.random() < p) {
+      const pick = Math.floor(Math.random() * labels.length);
+      return labels[pick];
+    }
+    return null; // 不顯示任何標籤
   });
 }
 
