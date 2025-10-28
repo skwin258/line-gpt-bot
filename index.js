@@ -1,4 +1,4 @@
-// index.js (Node 18+ / ESM) — 個人私聊版
+// index.js (Node 18+ / ESM) — 個人私聊版（開始預測 → 有圖片的系統卡片）
 import 'dotenv/config';
 import express from 'express';
 import { Client, middleware } from '@line/bot-sdk';
@@ -149,7 +149,46 @@ const tableData = {
     百家樂: ['百家樂D01','百家樂D02','百家樂D03','百家樂D04','百家樂D05','百家樂D06','百家樂D07','極速百家樂D08','百家樂C01','百家樂C02','百家樂C03','百家樂C04','百家樂C05','百家樂C06','百家樂C07','極速百家樂C08','百家樂M01','百家樂M02','百家樂M03','極速百家樂M04'],
     龍虎鬥: ['D龍虎','M龍虎'],
   },
+  MT真人: { // 新增
+    中文廳: ['百家樂1','百家樂2','百家樂3','百家樂4','百家樂5','百家樂6','百家樂7','百家樂8','百家樂9','百家樂10'],
+    亞洲廳: ['百家樂11','百家樂12','百家樂13'],
+  },
+  金佰新: { // 新增
+    亞洲廳: ['亞洲1廳','亞洲2廳','亞洲3廳','亞洲4廳','亞洲5廳','亞洲6廳','亞洲7廳','亞洲8廳','亞洲9廳','亞洲10廳','亞洲11廳','亞洲12廳'],
+    貴賓廳: ['貴賓1廳','貴賓2廳'],
+  },
 };
+
+/* =========================
+ * 系統選擇：有圖片的卡片（Carousel）
+ * ========================= */
+const SYSTEM_CARD_LIST = [
+  { title: 'DG百家',     sendText: 'DG真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/dg-baccarat-300x300.jpg' },
+  { title: '歐博百家',   sendText: '歐博真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/ou-bo-baccarat-300x300.jpg' },
+  { title: '沙龍百家',   sendText: '沙龍真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/sha-long-baccarat-300x300.jpg' },
+  { title: 'WM百家',     sendText: 'WM真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/wm-baccarat-300x300.jpg' },
+  { title: 'MT百家',     sendText: 'MT真人', img: 'https://bc78999.com/wp-content/uploads/2025/10/mt-baccarat-300x300.jpg' },
+  { title: '金佰新百家', sendText: '金佰新', img: 'https://bc78999.com/wp-content/uploads/2025/10/jinbaixin-baccarat-300x300.jpg' },
+];
+
+function buildSystemSelectCarousel() {
+  return {
+    type: 'carousel',
+    contents: SYSTEM_CARD_LIST.map(card => ({
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'image', url: card.img, size: 'full', aspectMode: 'cover', aspectRatio: '1:1' },
+          { type: 'text', text: card.title, weight: 'bold', size: 'md', align: 'center', margin: 'md', color: '#333333' },
+          { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '選擇', text: card.sendText } },
+        ],
+      },
+    })),
+  };
+}
 
 /* =========================
  * Flex 產生器（僅私聊）
@@ -289,7 +328,7 @@ function generateAnalysisResultFlex(userId, fullTableName, predicted = null) {
 }
 
 /* =========================
- * 注意事項 / 遊戲入口 / 報表卡
+ * 注意事項 / 報表卡
  * ========================= */
 const flexMessageIntroJson = {
   type: 'bubble',
@@ -308,21 +347,6 @@ const flexMessageIntroJson = {
       { type: 'text', text: '5. 本系統為輔助工具，請理性投注。', wrap: true },
     ]},
     { type: 'button', action: { type: 'message', label: '開始預測', text: '開始預測' }, style: 'primary', color: '#00B900', margin: 'xl' },
-  ]},
-};
-
-const flexMessageGameSelectJson = {
-  type: 'bubble',
-  body: { type: 'box', layout: 'vertical', contents: [
-    { type: 'text', text: 'SKwin AI算牌系統', weight: 'bold', color: '#00B900', size: 'lg', align: 'center' },
-    { type: 'separator', margin: 'md' },
-    { type: 'text', text: '請選擇遊戲', align: 'center', margin: 'md', weight: 'bold' },
-    { type: 'box', layout: 'vertical', margin: 'lg', spacing: 'md', contents: [
-      { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: 'DG真人', text: 'DG真人' } },
-      { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '歐博真人', text: '歐博真人' } },
-      { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: '沙龍真人', text: '沙龍真人' } },
-      { type: 'button', style: 'primary', color: '#00B900', action: { type: 'message', label: 'WM真人', text: 'WM真人' } },
-    ]},
   ]},
 };
 
@@ -457,8 +481,11 @@ async function handleEvent(event) {
   if (userMessage === '會員開通' || userMessage === 'AI算牌說明') {
     return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
   }
+
+  // 新：開始預測 → 有圖片的系統卡片（Carousel）
   if (userMessage === '開始預測') {
-    return safeReply(event, { type: 'flex', altText: '請選擇遊戲', contents: flexMessageGameSelectJson });
+    const carousel = buildSystemSelectCarousel();
+    return safeReply(event, { type: 'flex', altText: '請選擇系統', contents: carousel });
   }
 
   // 報表入口（私聊）
@@ -490,8 +517,8 @@ async function handleEvent(event) {
     return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
   }
 
-  // 私聊：選單流程
-  if (['DG真人', '歐博真人', '沙龍真人', 'WM真人'].includes(userMessage)) {
+  // 私聊：選單流程（含 MT / 金佰新）
+  if (['DG真人', '歐博真人', '沙龍真人', 'WM真人', 'MT真人', '金佰新'].includes(userMessage)) {
     const hallFlex = generateHallSelectFlex(userMessage);
     return safeReply(event, { type: 'flex', altText: `${userMessage} 遊戲廳選擇`, contents: hallFlex });
   }
