@@ -244,9 +244,8 @@ function generateHallSelectFlex(gameName) {
 // 每桌預設「進行中」，依機率升級為「熱門🔥」或「推薦✅」
 function buildStatusListForHall(
   tables,
-  { hotP = 0.18, recP = 0.22 } = {} // 熱門 18%，推薦 22%，其餘為進行中（可自行調整）
+  { hotP = 0.18, recP = 0.22 } = {} // 熱門 18%，推薦 22%，其餘為進行中
 ) {
-  // hotP + recP 請勿超過 1（100%）
   return tables.map(() => {
     const r = Math.random();
     if (r < hotP) return '熱門🔥';
@@ -265,19 +264,16 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
 
   const bubbles = pageTables.map((table, idxOnPage) => {
     const idxAll = startIndex + idxOnPage;
-    const status = statusList[idxAll]; // 可能是 null
+    const status = statusList[idxAll];
 
-    // 先放共同內容
     const contents = [
       { type: 'text', text: table, weight: 'bold', size: 'md', color: '#00B900' },
     ];
 
-    // 有狀態才 push 這一行，沒有就不加，避免空白
     if (status) {
       contents.push({ type: 'text', text: status, size: 'sm', color: '#666666', margin: 'sm' });
     }
 
-    // 其他固定行
     contents.push(
       { type: 'text', text: '最低下注：100元', size: 'sm', color: '#555555', margin: 'sm' },
       { type: 'text', text: '最高限額：10000元', size: 'sm', color: '#555555', margin: 'sm' },
@@ -568,119 +564,89 @@ async function handleEvent(event) {
   if (userMessage === '會員開通' || userMessage === 'AI算牌說明') {
     return safeReply(event, { type: 'flex', altText: 'SKwin AI算牌系統 注意事項', contents: flexMessageIntroJson });
   }
-if (userMessage === '開始預測') {
-  // 直接送出完整 Flex 訊息（外層 flex 由這裡包）
-  return safeReply(event, {
-    type: 'flex',
-    altText: '請選擇系統',
-    contents: buildSystemSelectCarousel()
-  });
-}
+  if (userMessage === '開始預測') {
+    return safeReply(event, {
+      type: 'flex',
+      altText: '請選擇系統',
+      contents: buildSystemSelectCarousel()
+    });
+  }
 
   // 報表入口（私聊）
   if (userMessage === '報表') {
     return safeReply(event, buildReportIntroFlex());
   }
 
-  // 安全解析 fullTableName（不足三段也有預設值）
-function parseFullTableSafe(full) {
-  if (!full || typeof full !== 'string') {
-    return { system: '', hall: '', table: '' };
-  }
-  const parts = full.split('|');
-  return {
-    system: parts[0] ?? '',
-    hall: parts[1] ?? '',
-    table: parts[2] ?? '',
-  };
-}
+  // === 報表：工具與「當局報表」處理 =======================
 
-// 取得該使用者最後一筆下注紀錄（依 ts 最大）
-function getLastLogForUser(userId) {
-  const logs = userBetLogs.get(userId) || [];
-  if (logs.length === 0) return null;
-  let last = logs[0];
-  for (const x of logs) {
-    if ((x?.ts || 0) > (last?.ts || 0)) last = x;
-  }
-  return last;
-}
-
-// 安全解析 fullTableName → { system, hall, table }
-function parseFullTableSafe(full) {
-  if (!full || typeof full !== 'string') return { system: '', hall: '', table: '' };
-  const parts = full.split('|');
-  return {
-    system: parts[0] ?? '',
-    hall:   parts[1] ?? '',
-    table:  parts[2] ?? '',
-  };
-}
-
-if (userMessage === '當局報表') {
-  // A. 優先：最新一次推薦（一定含 system/hall/table）
-  const lastRec  = userLastRecommend.get(userId) || null;
-
-  // B. 次之：目前選桌（fullTableName）
-  const fullSel  = userCurrentTable.get(userId) || '';
-
-  // C. 保底：該使用者最後一筆（已回報過的）下注紀錄
-  const lastLog  = getLastLogForUser(userId);
-
-  // 先嘗試從 A 取，否則解析 B，再不行用 C
-  let system = '', hall = '', table = '';
-  if (lastRec && lastRec.system) {
-    system = String(lastRec.system || '');
-    hall   = String(lastRec.hall   || '');
-    table  = String(lastRec.table  || '');
-  } else if (fullSel) {
-    const parsed = parseFullTableSafe(fullSel);
-    system = parsed.system;
-    hall   = parsed.hall;
-    table  = parsed.table;
-  } else if (lastLog) {
-    system = String(lastLog.system || '');
-    hall   = String(lastLog.hall   || '');
-    table  = String(lastLog.table  || '');
-  }
-
-  // 沒任何線索 → 請先選桌
-  if (!system && !hall && !table) {
-    return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
-  }
-
-  // 目標 fullTableName：A > B > C
-  const targetFull =
-    (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
-    (fullSel ? fullSel :
-    (lastLog && lastLog.fullTableName ? lastLog.fullTableName : ''));
-
-  // 匯總該桌紀錄
-  const allLogs = userBetLogs.get(userId) || [];
-  const logs = targetFull
-    ? allLogs.filter(x => x.fullTableName === targetFull)
-    : allLogs.filter(x => x.system === system && x.hall === hall && x.table === table);
-
-  const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
-  const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-
-  return safeReply(
-    event,
-    buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
-  );
-}
-  if (userMessage === '本日報表') {
-    const logs = userBetLogs.get(userId) || [];
-    const { startMs, endMs } = getTodayRangeTimestamp();
-    const todayLogs = logs.filter(x => x.ts >= startMs && x.ts <= endMs);
-    if (todayLogs.length === 0) {
-      return safeReply(event, { type: 'text', text: '今日尚無可統計的投注紀錄（計算區間 12:00–23:59）。' });
+  // 取得該使用者「最後一筆」下注紀錄（依 ts 最大）
+  function getLastLogForUser(uid) {
+    const logs = userBetLogs.get(uid) || [];
+    if (logs.length === 0) return null;
+    let last = logs[0];
+    for (const x of logs) {
+      if ((x?.ts || 0) > (last?.ts || 0)) last = x;
     }
-    const systems = [...new Set(todayLogs.map(x => x.system))];
-    const tables  = [...new Set(todayLogs.map(x => x.table))];
-    const totalAmount = todayLogs.reduce((s, x) => s + (Number(x.amount) || 0), 0);
-    const sumColumns = todayLogs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
-    return safeReply(event, buildDailyReportFlex(systems, tables, totalAmount, sumColumns));
+    return last;
+  }
+
+  // 安全解析 fullTableName → { system, hall, table }
+  function parseFullTableSafe(full) {
+    if (!full || typeof full !== 'string') return { system: '', hall: '', table: '' };
+    const parts = full.split('|');
+    return {
+      system: parts[0] ?? '',
+      hall:   parts[1] ?? '',
+      table:  parts[2] ?? '',
+    };
+  }
+
+  if (userMessage === '當局報表') {
+    // A. 最新一次推薦（一定含 system/hall/table）
+    const lastRec  = userLastRecommend.get(userId) || null;
+    // B. 目前選桌
+    const fullSel  = userCurrentTable.get(userId) || '';
+    // C. 最後一筆已回報紀錄
+    const lastLog  = getLastLogForUser(userId);
+
+    let system = '', hall = '', table = '';
+
+    if (lastRec && lastRec.system) {
+      system = String(lastRec.system || '');
+      hall   = String(lastRec.hall   || '');
+      table  = String(lastRec.table  || '');
+    } else if (fullSel) {
+      const parsed = parseFullTableSafe(fullSel);
+      system = parsed.system;
+      hall   = parsed.hall;
+      table  = parsed.table;
+    } else if (lastLog) {
+      system = String(lastLog.system || '');
+      hall   = String(lastLog.hall   || '');
+      table  = String(lastLog.table  || '');
+    }
+
+    if (!system && !hall && !table) {
+      return safeReply(event, { type: 'text', text: '尚未選擇牌桌，請先選擇桌號後再查看當局報表。' });
+    }
+
+    const targetFull =
+      (lastRec && lastRec.fullTableName) ? lastRec.fullTableName :
+      (fullSel ? fullSel :
+      (lastLog && lastLog.fullTableName ? lastLog.fullTableName : ''));
+
+    const allLogs = userBetLogs.get(userId) || [];
+    const logs = targetFull
+      ? allLogs.filter(x => x.fullTableName === targetFull)
+      : allLogs.filter(x => x.system === system && x.hall === hall && x.table === table);
+
+    const totalAmount = logs.reduce((s, x) => s + (Number(x.amount)  || 0), 0);
+    const sumColumns  = logs.reduce((s, x) => s + (Number(x.columns) || 0), 0);
+
+    return safeReply(
+      event,
+      buildRoundReportFlexCurrent(system || '未指定', hall || '未指定', table || '未指定', totalAmount, sumColumns)
+    );
   }
 
   // 私聊：選單流程（系統 → 廳）
