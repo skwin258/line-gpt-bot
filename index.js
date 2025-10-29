@@ -755,18 +755,23 @@ async function handleEvent(event) {
   }
 
   // 選擇桌號 -> 要求輸入前20局（最少6局）
-  if (userMessage.startsWith('選擇桌號|')) {
-    const parts = userMessage.split('|');
-    const gameName = parts[1];
-    const hallName = parts[2];
-    const tableNumber = parts[3];
-    const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
+if (userMessage.startsWith('選擇桌號|')) {
+  const parts = userMessage.split('|');
+  const gameName = parts[1];
+  const hallName = parts[2];
+  const tableNumber = parts[3];
+  const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
 
-    userCurrentTable.set(userId, fullTableName);
-    userRecentInput.delete(userId); // 換房/桌 → 強制清空
+  // 先清掉舊的序列（換系統/換桌必須重打）
+  userRecentInput.delete(userId);
 
-    return safeReply(event, { type: 'flex', altText: `請輸入 ${fullTableName} 前20局結果`, contents: generateInputInstructionFlex(fullTableName) });
-  }
+  userCurrentTable.set(userId, fullTableName);
+  return safeReply(event, {
+    type: 'flex',
+    altText: `請輸入 ${fullTableName} 前20局結果`,
+    contents: generateInputInstructionFlex(fullTableName)
+  });
+}
 
   // 非法字元防呆
   const isReportKeyword = (userMessage === '當局報表' || userMessage === '本日報表' || userMessage === '報表');
