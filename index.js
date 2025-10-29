@@ -501,6 +501,16 @@ https://lin.ee/6kcsWNF`;
 function tryPublicKeyword(msg) {
   if (/^聯絡客服$/i.test(msg)) return { type: 'text', text: CONTACT_REPLY_TEXT };
   if (/^報表$/i.test(msg)) return buildReportIntroFlex();
+
+  // 新增：當月優惠 → 顯示圖片
+  if (/^當月優惠$/i.test(msg)) {
+    return {
+      type: 'image',
+      originalContentUrl: 'https://bc78999.com/wp-content/uploads/2025/10/%E6%96%87%E6%A8%82-54.jpg',        // 大圖
+      previewImageUrl:  'https://bc78999.com/wp-content/uploads/2025/10/%E6%96%87%E6%A8%82-54-300x300.jpg'   // 預覽縮圖
+    };
+  }
+
   return null;
 }
 
