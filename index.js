@@ -843,87 +843,85 @@ async function handleEvent(event) {
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
 
-  // 回報當局結果（私聊）→ 更新該桌序列，並以「合併卡」回覆
-  if (userMessage.startsWith('當局結果為|')) {
-    const parts = userMessage.split('|');
-    if (parts.length === 3) {
-      const nowTs = Date.now();
-      const lastPress = resultPressCooldown.get(userId) || 0;
-      if (nowTs - lastPress < RESULT_COOLDOWN_MS) {
-        return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
-      }
-      resultPressCooldown.set(userId, nowTs);
-
-      const actual = parts[1];                 // 莊/閒/和（龍/虎/和）
-      const fullTableName = parts[2];
-      const last = userLastRecommend.get(userId);
-
-      // 記帳（有投有記）
-      if (last && last.fullTableName === fullTableName) {
-        const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
-        const money = cols * 100;
-        const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
-        const arr = userBetLogs.get(userId) || [];
-        arr.push(entry);
-        userBetLogs.set(userId, arr);
-      }
-
-      // 更新這張桌的珠盤（龍/虎映射）
-      const mapDT = { '龍':'閒', '虎':'莊' };
-      const toAppend = mapDT[actual] || actual;
-
-      const rec = userRecentInput.get(userId);
-      let seqAfter = '';
-      if (rec && normalizeFullTableName(rec.tableFull) === normalizeFullTableName(fullTableName) && rec.seq) {
-        seqAfter = rec.seq + toAppend;
-      } else {
-        // 不同桌或尚未輸入 → 從這手開始
-        seqAfter = toAppend;
-      }
-      if (seqAfter.length > 20) seqAfter = seqAfter.slice(-20);
-      userRecentInput.set(userId, { seq: seqAfter, tableFull: fullTableName, ts: nowTs });
-
-      // 準備新的分析數據（沿用 generateAnalysisResultFlex 的邏輯）
-      const partsFT = String(fullTableName).split('|');
-      const gameName = partsFT[0] || fullTableName;
-      const hallName = partsFT[1] || '';
-      const isDragonTiger = hallName === '龍虎鬥';
-
-      // 這裡產出一組與 generateAnalysisResultFlex 一致的建議，用於合併卡
-      const r = Math.random() * 100;
-      const mainPick = isDragonTiger ? (r < 50 ? '龍' : '虎') : (r < 50 ? '莊' : '閒');
-      const passRate = Math.floor(Math.random() * (90 - 45 + 1)) + 45;
-      let betLevel = '觀望';
-      let betAmount = 100;
-      if (passRate <= 50) { betLevel = '觀望'; betAmount = 100; }
-      else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(100, 1000); }
-      else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
-      else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
-      const reasons = [
-        `近期節奏偏${mainPick}，勝率估約${passRate}% ，資金可採階梯式進場。`,
-        `路紙單邊延伸、波動收斂，${mainPick}佔優；以風險報酬比評估，${betLevel}較合理。`,
-        `連動段落未轉折，${mainPick}承接力強；量化指標偏多，依紀律${betLevel}。`,
-        `慣性朝${mainPick}傾斜，優勢未被破壞；依趨勢邏輯，執行${betLevel}。`,
-        `形態無反轉訊號，${mainPick}動能續航；配合分散下注原則，${betLevel}較佳。`,
-      ];
-      const reason = pickOne(reasons);
-
-      // 回「合併卡」：珠盤 + 分析結果（同張）
-      const merged = combinedBeadplateAndAnalysisFlex({
-        seq: seqAfter,
-        fullTableName,
-        systemName: gameName,
-        mainPick,
-        betLevel,
-        betAmount,
-        passRate,
-        reason,
-        isDragonTiger
-      });
-
-      return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: merged });
-    }
+// 回報當局結果（私聊）→ 先更新該桌序列，再顯示合併卡
+if (userMessage.startsWith('當局結果為|')) {
+  const parts = userMessage.split('|');
+  // 允許 fullTableName 內含額外的管線符（系統|廳|桌）
+  const actual = parts[1]?.trim();                 // 莊/閒/和（龍/虎/和）
+  const fullTableName = parts.slice(2).join('|').trim();
+  if (!actual || !fullTableName) {
+    return safeReply(event, { type: 'text', text: '格式有誤，請重新點選回報按鈕。' });
   }
+
+  const nowTs = Date.now();
+  const lastPress = resultPressCooldown.get(userId) || 0;
+  if (nowTs - lastPress < RESULT_COOLDOWN_MS) {
+    return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
+  }
+  resultPressCooldown.set(userId, nowTs);
+
+  // === 以下保留你原本的記帳、更新序列與回覆合併卡邏輯 ===
+  const last = userLastRecommend.get(userId);
+
+  // 記帳（有投有記）
+  if (last && last.fullTableName === fullTableName) {
+    const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
+    const money = cols * 100;
+    const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
+    const arr = userBetLogs.get(userId) || [];
+    arr.push(entry);
+    userBetLogs.set(userId, arr);
+  }
+
+  // 更新這張桌的珠盤（龍/虎映射）
+  const mapDT = { '龍':'閒', '虎':'莊' };
+  const toAppend = mapDT[actual] || actual;
+
+  const rec = userRecentInput.get(userId);
+  let seqAfter = '';
+  if (rec && normalizeFullTableName(rec.tableFull) === normalizeFullTableName(fullTableName) && rec.seq) {
+    seqAfter = rec.seq + toAppend;
+  } else {
+    seqAfter = toAppend;
+  }
+  if (seqAfter.length > 20) seqAfter = seqAfter.slice(-20);
+  userRecentInput.set(userId, { seq: seqAfter, tableFull: fullTableName, ts: nowTs });
+
+  // 準備新的分析數據（與原本相同）
+  const [gameName, hallName] = String(fullTableName).split('|');
+  const isDragonTiger = hallName === '龍虎鬥';
+  const r = Math.random() * 100;
+  const mainPick = isDragonTiger ? (r < 50 ? '龍' : '虎') : (r < 50 ? '莊' : '閒');
+  const passRate = Math.floor(Math.random() * (90 - 45 + 1)) + 45;
+  let betLevel = '觀望';
+  let betAmount = 100;
+  if (passRate <= 50) { betLevel = '觀望'; betAmount = randHundreds(100, 1000); }
+  else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(100, 1000); }
+  else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
+  else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
+  const reasons = [
+    `近期節奏偏${mainPick}，勝率估約${passRate}% ，資金可採階梯式進場。`,
+    `路紙單邊延伸、波動收斂，${mainPick}佔優；以風險報酬比評估，${betLevel}較合理。`,
+    `連動段落未轉折，${mainPick}承接力強；量化指標偏多，依紀律${betLevel}。`,
+    `慣性朝${mainPick}傾斜，優勢未被破壞；依趨勢邏輯，執行${betLevel}。`,
+    `形態無反轉訊號，${mainPick}動能續航；配合分散下注原則，${betLevel}較佳。`,
+  ];
+  const reason = reasons[Math.floor(Math.random() * reasons.length)];
+
+  const merged = combinedBeadplateAndAnalysisFlex({
+    seq: seqAfter,
+    fullTableName,
+    systemName: gameName,
+    mainPick,
+    betLevel,
+    betAmount,
+    passRate,
+    reason,
+    isDragonTiger
+  });
+
+  return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: merged });
+}
 
   // 預設回覆
   return safeReply(event, { type: 'text', text: '已關閉問答模式，需要開啟請輸入關鍵字。' });
