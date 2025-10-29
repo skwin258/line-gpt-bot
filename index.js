@@ -266,15 +266,26 @@ function generateTableListFlex(gameName, hallName, tables, page = 1, pageSize = 
  * ========================= */
 const EMOJI = { '閒':'🔵', '莊':'🔴', '和':'🟢', '龍':'🔵', '虎':'🔴' };
 
-/** 直列高度6；先填滿第一欄再換下一欄（兩欄視覺） */
-function toBeadRows(seq) {
-  const icons = [...String(seq)].map(c => EMOJI[c] || '');
+/** 先把同一欄塞滿 6 行，再換到下一欄；最後再把各欄按「列」拼回去顯示 */
+function buildRowsByColumns(seq, colHeight = 6) {
+  const syms = [...String(seq)].map(c => EMOJI[c] || '');
+  const cols = Math.ceil(syms.length / colHeight); // 總欄數
   const rows = [];
-  for (let i = 0; i < icons.length; i += 2) rows.push(icons.slice(i, i + 2).join(' '));
+  for (let r = 0; r < colHeight; r++) {
+    let line = '';
+    for (let c = 0; c < cols; c++) {
+      const idx = c * colHeight + r;        // 以欄為主、逐列取值
+      if (idx < syms.length) {
+        line += (line ? ' ' : '') + syms[idx];
+      }
+    }
+    if (line) rows.push(line);
+  }
   return rows;
 }
+
 function beadplateFlex(seq, title = '當前珠盤路', subtitle = '') {
-  const rows = toBeadRows(seq);
+  const rows = buildRowsByColumns(seq, 6);
   return {
     type: 'bubble',
     body: { type: 'box', layout: 'vertical', spacing:'sm', contents: [
@@ -285,6 +296,7 @@ function beadplateFlex(seq, title = '當前珠盤路', subtitle = '') {
     ]},
   };
 }
+
 // 輸入後第一張「預覽卡」＋ 開始分析
 function beadplatePreviewFlex(seq, fullTableName) {
   const subtitle = '說明:請確認當下遊戲內珠盤路順序與下方一致，確認一致再點擊開始分析，以避免系統錯誤判斷。';
@@ -296,9 +308,10 @@ function beadplatePreviewFlex(seq, fullTableName) {
   );
   return base;
 }
-// 回報後「合併卡」：上半珠盤 + 下半分析 + 三鍵
+
+// 合併卡也用同樣的 6 行換欄規則
 function combinedBeadplateAndAnalysisFlex({ seq, fullTableName, systemName, mainPick, betLevel, betAmount, passRate, reason, isDragonTiger }) {
-  const rows = toBeadRows(seq);
+  const rows = buildRowsByColumns(seq, 6);
   const leftBtnLabel  = isDragonTiger ? '龍' : '閒';
   const rightBtnLabel = isDragonTiger ? '虎' : '莊';
   return {
