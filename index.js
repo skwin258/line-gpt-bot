@@ -123,6 +123,11 @@ async function callOpenAIWithTimeout(messages, { model = 'gpt-4o-mini', timeoutM
   } finally { clearTimeout(timer); }
 }
 
+// 新增：桌名正規化，避免空白/符號差異
+function normalizeFullTableName(s) {
+  return String(s || '').replace(/\s+/g, '').trim();
+}
+
 /* =========================
  * 遊戲資料
  * ========================= */
@@ -309,7 +314,7 @@ function beadplatePreviewFlex(seq, fullTableName) {
   return base;
 }
 
-// 合併卡也用同樣的 6 行換欄規則
+// 合併卡：當前珠盤路 + 分析結果（同張）
 function combinedBeadplateAndAnalysisFlex({ seq, fullTableName, systemName, mainPick, betLevel, betAmount, passRate, reason, isDragonTiger }) {
   const rows = buildRowsByColumns(seq, 6);
   const leftBtnLabel  = isDragonTiger ? '龍' : '閒';
@@ -755,23 +760,23 @@ async function handleEvent(event) {
   }
 
   // 選擇桌號 -> 要求輸入前20局（最少6局）
-if (userMessage.startsWith('選擇桌號|')) {
-  const parts = userMessage.split('|');
-  const gameName = parts[1];
-  const hallName = parts[2];
-  const tableNumber = parts[3];
-  const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
+  if (userMessage.startsWith('選擇桌號|')) {
+    const parts = userMessage.split('|');
+    const gameName = parts[1];
+    const hallName = parts[2];
+    const tableNumber = parts[3];
+    const fullTableName = `${gameName}|${hallName}|${tableNumber}`;
 
-  // 先清掉舊的序列（換系統/換桌必須重打）
-  userRecentInput.delete(userId);
+    // 先清掉舊的序列（換系統/換桌必須重打）
+    userRecentInput.delete(userId);
 
-  userCurrentTable.set(userId, fullTableName);
-  return safeReply(event, {
-    type: 'flex',
-    altText: `請輸入 ${fullTableName} 前20局結果`,
-    contents: generateInputInstructionFlex(fullTableName)
-  });
-}
+    userCurrentTable.set(userId, fullTableName);
+    return safeReply(event, {
+      type: 'flex',
+      altText: `請輸入 ${fullTableName} 前20局結果`,
+      contents: generateInputInstructionFlex(fullTableName)
+    });
+  }
 
   // 非法字元防呆
   const isReportKeyword = (userMessage === '當局報表' || userMessage === '本日報表' || userMessage === '報表');
@@ -782,22 +787,22 @@ if (userMessage.startsWith('選擇桌號|')) {
   }
 
   // 接收前20局（6~20字）→ 綁定桌號並送出「預覽＋開始分析」卡
-if (/^[閒莊和]{6,20}$/.test(userMessage)) {
-  const fullTableName = userCurrentTable.get(userId);
-  if (!fullTableName) {
-    return safeReply(event, { type: 'text', text: '請先選擇系統/廳/桌，再輸入前20局。' });
+  if (/^[閒莊和]{6,20}$/.test(userMessage)) {
+    const fullTableName = userCurrentTable.get(userId);
+    if (!fullTableName) {
+      return safeReply(event, { type: 'text', text: '請先選擇系統/廳/桌，再輸入前20局。' });
+    }
+
+    // 綁定：這組序列屬於哪一桌
+    userRecentInput.set(userId, { seq: userMessage, tableFull: fullTableName, ts: now });
+
+    // 回「6行換欄」的珠盤預覽卡＋開始分析按鈕
+    return safeReply(event, {
+      type: 'flex',
+      altText: `珠盤預覽 - ${fullTableName}`,
+      contents: beadplatePreviewFlex(userMessage, fullTableName)
+    });
   }
-
-  // 綁定：這組序列屬於哪一桌
-  userRecentInput.set(userId, { seq: userMessage, tableFull: fullTableName, ts: now });
-
-  // 回「6行換欄」的珠盤預覽卡＋開始分析按鈕
-  return safeReply(event, {
-    type: 'flex',
-    altText: `珠盤預覽 - ${fullTableName}`,
-    contents: beadplatePreviewFlex(userMessage, fullTableName)
-  });
-}
 
   // 僅輸入但不足條件
   if (/^[閒莊和]+$/.test(userMessage)) {
@@ -807,75 +812,118 @@ if (/^[閒莊和]{6,20}$/.test(userMessage)) {
     });
   }
 
- // 開始分析（私聊）
-if (userMessage.startsWith('開始分析|')) {
-  const fullTableName = userMessage.split('|')[1];
-  const rec = userRecentInput.get(userId);
-
-  // 需有序列且必須是同一張桌子的序列
-  if (!rec || !/^[閒莊和]{6,20}$/.test(rec.seq) || rec.tableFull !== fullTableName) {
-    return safeReply(event, {
-      type: 'text',
-      text: '目前尚未輸入此桌的有效序列（需 6~20 局），請重新輸入後再按【開始分析】。'
-    });
+  // 新增：開始分析（不帶參數 → 用目前選桌）
+  if (userMessage === '開始分析') {
+    const ft = userCurrentTable.get(userId);
+    if (!ft) return safeReply(event, { type: 'text', text: '尚未選擇牌桌。請先選擇系統/廳/桌。' });
+    // 轉成帶參數的同一流程
+    return handleEvent({ ...event, message: { ...event.message, text: `開始分析|${ft}` } });
   }
 
-  const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
-  return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
-}
-
-// 回報當局結果（私聊）→ 先更新該桌序列，再顯示珠盤卡與新分析卡
-if (userMessage.startsWith('當局結果為|')) {
-  const parts = userMessage.split('|');
-  if (parts.length === 3) {
-    const nowTs = Date.now();
-    const lastPress = resultPressCooldown.get(userId) || 0;
-    if (nowTs - lastPress < RESULT_COOLDOWN_MS) {
-      return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
-    }
-    resultPressCooldown.set(userId, nowTs);
-
-    const actual = parts[1];                 // 莊/閒/和（龍/虎/和）
-    const fullTableName = parts[2];
-    const last = userLastRecommend.get(userId);
-
-    // 記帳（有投有記）
-    if (last && last.fullTableName === fullTableName) {
-      const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
-      const money = cols * 100;
-      const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
-      const arr = userBetLogs.get(userId) || [];
-      arr.push(entry);
-      userBetLogs.set(userId, arr);
-    }
-
-    // 更新這張桌的珠盤（龍/虎映射）
-    const mapDT = { '龍':'閒', '虎':'莊' };
-    const toAppend = mapDT[actual] || actual;
-
+  // 開始分析（私聊）
+  if (userMessage.startsWith('開始分析|')) {
+    const fullTableName = userMessage.split('|').slice(1).join('|').trim();
     const rec = userRecentInput.get(userId);
-    let seqAfter = '';
-    if (rec && rec.tableFull === fullTableName && rec.seq) {
-      seqAfter = rec.seq + toAppend;
-    } else {
-      // 不同桌或尚未輸入 → 從這手開始
-      seqAfter = toAppend;
+
+    const want = normalizeFullTableName(fullTableName);
+    const recTable = normalizeFullTableName(rec?.tableFull || '');
+    const curr = normalizeFullTableName(userCurrentTable.get(userId) || '');
+
+    // 需有序列且必須是同一張桌子的序列（容許與當前選桌一致）
+    const tableOk = !!rec && (recTable === want || recTable === curr);
+
+    if (!rec || !/^[閒莊和]{6,20}$/.test(rec.seq) || !tableOk) {
+      return safeReply(event, {
+        type: 'text',
+        text: '目前尚未輸入此桌的有效序列（需 6~20 局），請重新輸入後再按【開始分析】。'
+      });
     }
-    if (seqAfter.length > 20) seqAfter = seqAfter.slice(-20);
-    userRecentInput.set(userId, { seq: seqAfter, tableFull: fullTableName, ts: nowTs });
 
-    // 珠盤卡（6行換欄）
-    await safeReply(event, {
-      type: 'flex',
-      altText: '當前珠盤路',
-      contents: beadplateFlex(seqAfter, '當前珠盤路', '如果與當前不一致，請重新輸入。')
-    });
-
-    // 新的分析卡
     const analysisResultFlex = generateAnalysisResultFlex(userId, fullTableName);
     return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: analysisResultFlex });
   }
-}
+
+  // 回報當局結果（私聊）→ 更新該桌序列，並以「合併卡」回覆
+  if (userMessage.startsWith('當局結果為|')) {
+    const parts = userMessage.split('|');
+    if (parts.length === 3) {
+      const nowTs = Date.now();
+      const lastPress = resultPressCooldown.get(userId) || 0;
+      if (nowTs - lastPress < RESULT_COOLDOWN_MS) {
+        return safeReply(event, { type: 'text', text: '當局牌局尚未結束，請當局牌局結束再做操作。' });
+      }
+      resultPressCooldown.set(userId, nowTs);
+
+      const actual = parts[1];                 // 莊/閒/和（龍/虎/和）
+      const fullTableName = parts[2];
+      const last = userLastRecommend.get(userId);
+
+      // 記帳（有投有記）
+      if (last && last.fullTableName === fullTableName) {
+        const cols = columnsFromAmount(last.amount) * (actual === last.side ? 1 : -1);
+        const money = cols * 100;
+        const entry = { ...last, actual, columns: cols, money, ts: Date.now() };
+        const arr = userBetLogs.get(userId) || [];
+        arr.push(entry);
+        userBetLogs.set(userId, arr);
+      }
+
+      // 更新這張桌的珠盤（龍/虎映射）
+      const mapDT = { '龍':'閒', '虎':'莊' };
+      const toAppend = mapDT[actual] || actual;
+
+      const rec = userRecentInput.get(userId);
+      let seqAfter = '';
+      if (rec && normalizeFullTableName(rec.tableFull) === normalizeFullTableName(fullTableName) && rec.seq) {
+        seqAfter = rec.seq + toAppend;
+      } else {
+        // 不同桌或尚未輸入 → 從這手開始
+        seqAfter = toAppend;
+      }
+      if (seqAfter.length > 20) seqAfter = seqAfter.slice(-20);
+      userRecentInput.set(userId, { seq: seqAfter, tableFull: fullTableName, ts: nowTs });
+
+      // 準備新的分析數據（沿用 generateAnalysisResultFlex 的邏輯）
+      const partsFT = String(fullTableName).split('|');
+      const gameName = partsFT[0] || fullTableName;
+      const hallName = partsFT[1] || '';
+      const isDragonTiger = hallName === '龍虎鬥';
+
+      // 這裡產出一組與 generateAnalysisResultFlex 一致的建議，用於合併卡
+      const r = Math.random() * 100;
+      const mainPick = isDragonTiger ? (r < 50 ? '龍' : '虎') : (r < 50 ? '莊' : '閒');
+      const passRate = Math.floor(Math.random() * (90 - 45 + 1)) + 45;
+      let betLevel = '觀望';
+      let betAmount = 100;
+      if (passRate <= 50) { betLevel = '觀望'; betAmount = 100; }
+      else if (passRate <= 65) { betLevel = '小注'; betAmount = randHundreds(100, 1000); }
+      else if (passRate <= 75) { betLevel = '中注'; betAmount = randHundreds(1100, 2000); }
+      else { betLevel = '重注'; betAmount = randHundreds(2100, 3000); }
+      const reasons = [
+        `近期節奏偏${mainPick}，勝率估約${passRate}% ，資金可採階梯式進場。`,
+        `路紙單邊延伸、波動收斂，${mainPick}佔優；以風險報酬比評估，${betLevel}較合理。`,
+        `連動段落未轉折，${mainPick}承接力強；量化指標偏多，依紀律${betLevel}。`,
+        `慣性朝${mainPick}傾斜，優勢未被破壞；依趨勢邏輯，執行${betLevel}。`,
+        `形態無反轉訊號，${mainPick}動能續航；配合分散下注原則，${betLevel}較佳。`,
+      ];
+      const reason = pickOne(reasons);
+
+      // 回「合併卡」：珠盤 + 分析結果（同張）
+      const merged = combinedBeadplateAndAnalysisFlex({
+        seq: seqAfter,
+        fullTableName,
+        systemName: gameName,
+        mainPick,
+        betLevel,
+        betAmount,
+        passRate,
+        reason,
+        isDragonTiger
+      });
+
+      return safeReply(event, { type: 'flex', altText: `分析結果 - ${fullTableName}`, contents: merged });
+    }
+  }
 
   // 預設回覆
   return safeReply(event, { type: 'text', text: '已關閉問答模式，需要開啟請輸入關鍵字。' });
