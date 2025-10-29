@@ -884,7 +884,7 @@ if (userMessage.startsWith('當局結果為|')) {
   } else {
     seqAfter = toAppend;
   }
-  if (seqAfter.length > 20) seqAfter = seqAfter.slice(-20);
+  if (seqAfter.length > 60) seqAfter = seqAfter.slice(-60);
   userRecentInput.set(userId, { seq: seqAfter, tableFull: fullTableName, ts: nowTs });
 
   // 準備新的分析數據（與原本相同）
