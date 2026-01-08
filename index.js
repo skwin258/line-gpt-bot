@@ -1,6 +1,7 @@
 // index.js (Node 18+ / ESM) — 個人私聊版（含系統圖片卡 + 桌別狀態 + 分頁規則 + 20局/至少6局 + 珠盤預覽 + 合併卡）
 import 'dotenv/config';
 import express from 'express';
+import 'global-agent/bootstrap';
 import { Client, middleware } from '@line/bot-sdk';
 import OpenAI from 'openai';
 
