@@ -1,6 +1,18 @@
 // index.js (Node 18+ / ESM) — 個人私聊版（含系統圖片卡 + 桌別狀態 + 分頁規則 + 20局/至少6局 + 珠盤預覽 + 合併卡）
 import 'dotenv/config';
 import express from 'express';
+
+// ✅ 只影響「runtime 對外請求」，不影響 npm i build
+import { ProxyAgent, setGlobalDispatcher } from 'undici';
+
+const proxyUrl = process.env.OUTBOUND_PROXY_URL; // 例如: http://198.13.52.252:3128
+if (proxyUrl) {
+  setGlobalDispatcher(new ProxyAgent(proxyUrl));
+  console.log('[proxy] enabled:', proxyUrl);
+} else {
+  console.log('[proxy] disabled (no OUTBOUND_PROXY_URL)');
+}
+
 import { Client, middleware } from '@line/bot-sdk';
 import OpenAI from 'openai';
 
